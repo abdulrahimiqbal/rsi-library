@@ -16,7 +16,7 @@ from pathlib import Path
 from .api import Gateway
 from .providers import load_models
 from .routing import load_adapters, load_evidence
-from .store import Store, StoreError
+from .store import HOSTED_OWNER_ID, MAX_COST_MICROUSD, Store, StoreError
 from .worker import Worker
 
 
@@ -24,8 +24,18 @@ def _print(value: object) -> None:
     print(json.dumps(value, indent=2), flush=True)
 
 
-def _serve(args, store, adapters, models, evidence, worker: Worker | None = None, *, drain: int = 3) -> None:
-    with Gateway(args.host, args.port, store, adapters, models, evidence) as gateway:
+def _microusd_env(name: str) -> int | None:
+    """Read a whole-microdollar amount from the environment; one dollar is 1000000."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or int(raw) > MAX_COST_MICROUSD:
+        raise ValueError(f"{name} must be a whole number of microdollars, for example 5000000 for $5.")
+    return int(raw)
+
+
+def _serve(args, store, adapters, models, evidence, worker: Worker | None = None, *, drain: int = 3, **options) -> None:
+    with Gateway(args.host, args.port, store, adapters, models, evidence, **options) as gateway:
         worker_thread = None
         if worker is not None:
             worker_thread = threading.Thread(target=worker.run, daemon=True)
@@ -81,11 +91,24 @@ def _hosted(args, store: Store) -> None:
     if not models or not all(model.available() for model in models.values()):
         raise ValueError("Configure hosted model credentials or explicitly enable demo mode.")
     token_hash = os.environ.get("RSI_BOOTSTRAP_KEY_SHA256", "").strip()
+    owner_limit = _microusd_env("RSI_HOSTED_SPEND_LIMIT_MICROUSD")
     if token_hash:
         store.bootstrap_workspace(token_hash)
+        if owner_limit is not None:
+            # The environment is the source of truth for the owner's allowance on every start.
+            store.set_spend_limit(HOSTED_OWNER_ID, owner_limit)
+    elif owner_limit is not None:
+        raise ValueError("RSI_HOSTED_SPEND_LIMIT_MICROUSD needs RSI_BOOTSTRAP_KEY_SHA256 to identify the owner workspace.")
     adapters = load_adapters(os.environ.get("RSI_METHOD_ADAPTERS", ""))
-    evidence = load_evidence(args.evidence)
-    _serve(args, store, adapters, models, evidence, Worker(store, adapters, models), drain=40)
+    evidence = load_evidence(args.evidence, config_json=os.environ.get("RSI_ROUTING_EVIDENCE_JSON"))
+    default_spend = _microusd_env("RSI_DEFAULT_WORKSPACE_SPEND_MICROUSD")
+    _serve(
+        args, store, adapters, models, evidence, Worker(store, adapters, models), drain=40,
+        operator_workspace=HOSTED_OWNER_ID if token_hash else None,
+        access_requests=os.environ.get("RSI_ACCESS_REQUESTS", "1") == "1",
+        trust_proxy=bool(os.environ.get("RAILWAY_ENVIRONMENT_ID")) or os.environ.get("RSI_TRUST_PROXY") == "1",
+        default_spend_microusd=1_000_000 if default_spend is None else default_spend,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,6 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     reconcile = commands.add_parser("reconcile", help="record a verified provider charge for an uncertain call")
     reconcile.add_argument("reservation")
     reconcile.add_argument("cost_microusd", type=int)
+    requests = commands.add_parser("access-requests", help="list requests for workspace keys")
+    requests.add_argument("--state", choices=("pending", "approved", "declined", "all"), default="pending")
+    approve = commands.add_parser("approve-request", help="create a workspace and write key for an access request")
+    approve.add_argument("request_id")
+    approve.add_argument("--spend-limit-microusd", type=int, default=1_000_000)
+    decline = commands.add_parser("decline-request", help="decline an access request")
+    decline.add_argument("request_id")
+    commands.add_parser("site-usage", help="read model usage across every workspace")
     commands.add_parser("worker", help="claim and execute queued jobs")
     commands.add_parser("hosted", help="serve the API and worker together on a single persistent volume")
     server = commands.add_parser("serve", help="serve the gateway API and browser workbench")
@@ -127,10 +158,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         path = Path(args.db)
-        if args.command == "hosted":
+        if args.command == "hosted" or os.environ.get("RAILWAY_ENVIRONMENT_ID"):
+            # Operator commands from a Railway shell run as root too; drop to the service user
+            # so the database and its journal files stay writable by the gateway.
             _hosted_storage(path)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        store = Store(path)
+        store = Store(path, site_spend_limit_microusd=_microusd_env("RSI_SITE_SPEND_LIMIT_MICROUSD"))
         if args.command == "workspace":
             _print({"id": store.create_workspace(args.name, args.spend_limit_microusd)})
         elif args.command == "key":
@@ -149,12 +182,22 @@ def main(argv: list[str] | None = None) -> int:
             _print({"spend_limit_microusd": store.set_spend_limit(args.workspace, args.cost_microusd)})
         elif args.command == "reconcile":
             _print(store.reconcile(args.reservation, args.cost_microusd))
+        elif args.command == "access-requests":
+            _print({"requests": store.access_requests(None if args.state == "all" else args.state)})
+        elif args.command == "approve-request":
+            _print(store.approve_access(args.request_id, args.spend_limit_microusd))
+        elif args.command == "decline-request":
+            _print({"request": store.decline_access(args.request_id)})
+        elif args.command == "site-usage":
+            _print({"usage": store.site_usage()})
         elif args.command == "demo":
             adapters = load_adapters()
             models = load_models(None, demo=True)
             demo_workspace = store.create_workspace("Local gateway demo")
             _print({"workspace_id": demo_workspace, **store.create_key(demo_workspace)})
-            _serve(args, store, adapters, models, [], Worker(store, adapters, models))
+            # The demo key can also try the operator view and the access request form.
+            _serve(args, store, adapters, models, [], Worker(store, adapters, models),
+                   operator_workspace=demo_workspace, access_requests=True)
         elif args.command == "hosted":
             _hosted(args, store)
         else:
@@ -163,7 +206,15 @@ def main(argv: list[str] | None = None) -> int:
             if not models:
                 raise ValueError("Configure at least one real model with --models or RSI_MODEL_CONFIG. For offline use, run 'demo'.")
             if args.command == "serve":
-                _serve(args, store, adapters, models, load_evidence(args.evidence))
+                default_spend = _microusd_env("RSI_DEFAULT_WORKSPACE_SPEND_MICROUSD")
+                _serve(
+                    args, store, adapters, models,
+                    load_evidence(args.evidence, config_json=os.environ.get("RSI_ROUTING_EVIDENCE_JSON")),
+                    operator_workspace=os.environ.get("RSI_OPERATOR_WORKSPACE") or None,
+                    access_requests=os.environ.get("RSI_ACCESS_REQUESTS") == "1",
+                    trust_proxy=os.environ.get("RSI_TRUST_PROXY") == "1",
+                    default_spend_microusd=1_000_000 if default_spend is None else default_spend,
+                )
             else:
                 missing = [model.api_key_env for model in models.values() if not model.available()]
                 if missing:

@@ -220,6 +220,42 @@ class GatewayHTTP(unittest.TestCase):
         self.assertEqual(catalog["evidence_policy"]["min_holdout_cases"], 8)
         self.assertEqual(self._request("/health/ready")[0], 200)
 
+    def _status(self, path, **kwargs):
+        try:
+            return self._request(path, **kwargs)
+        except HTTPError as error:
+            with error:
+                return error.code, json.load(error)
+
+    def test_access_requests_and_operator_review(self):
+        self.assertEqual(self._status("/access-requests", payload={"email": "a@example.com", "use_case": "Tune my router."})[0], 404)
+        self.gateway.access_requests = True
+        self.gateway.operator_workspace = self.workspace
+        info = self._request("/public/info")[1]
+        self.assertEqual((info["mode"], info["access_requests"]), ("live", True))
+        self.assertEqual(info["evidence_policy"]["alpha"], 0.05)
+
+        code, reply = self._status("/access-requests", payload={"email": "ada@example.com", "name": "Ada", "use_case": "Tune my router prompt."})
+        self.assertEqual((code, reply), (202, {"status": "received"}))
+        self.assertEqual(self._status("/access-requests", payload={"email": "bot@example.com", "use_case": "Spam spam spam.", "website": "x"})[0], 202)
+        self.assertEqual(self._status("/access-requests", payload={"email": "nope", "use_case": "Tune my router prompt."})[0], 400)
+        self.assertEqual(self._status("/access-requests", payload={"email": "late@example.com", "use_case": "Tune my router prompt."})[0], 429)
+        pending = self.store.access_requests()
+        self.assertEqual([row["email"] for row in pending], ["ada@example.com"])
+
+        self.assertEqual(self._status("/v1/operator/access-requests", token=self.other)[0], 403)
+        self.assertEqual(self._status("/v1/operator/access-requests", token=self.reader)[0], 403)
+        self.assertEqual(self._request("/v1/catalog", token=self.key)[1]["operator"], True)
+        self.assertEqual(self._request("/v1/catalog", token=self.other)[1]["operator"], False)
+        listed = self._request("/v1/operator/access-requests", token=self.key)[1]["requests"]
+        self.assertEqual(listed[0]["id"], pending[0]["id"])
+        code, approved = self._status(f"/v1/operator/access-requests/{pending[0]['id']}/approve", token=self.key,
+                                      payload={"spend_limit_microusd": 200_000})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.store.authenticate(approved["key"]["token"])["workspace_id"], approved["workspace_id"])
+        self.assertEqual(self._status(f"/v1/operator/access-requests/{pending[0]['id']}/decline", token=self.key, payload={})[0], 409)
+        self.assertIn("spent_microusd", self._request("/v1/operator/usage", token=self.key)[1]["usage"])
+
     def test_unknown_charge_is_preserved_and_never_replayed(self):
         self.provider.include_usage = False
         _, queued = self._request("/v1/jobs", token=self.key, payload=job(), idem="unknown")

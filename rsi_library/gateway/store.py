@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -16,6 +17,10 @@ MAX_CALLS = 10_000
 MAX_COST_MICROUSD = 10**12
 MAX_SECONDS = 86_400
 MAX_ACTIVE_JOBS = 10
+MAX_PENDING_REQUESTS = 500
+# The hosted deployment's owner workspace, provisioned from RSI_BOOTSTRAP_KEY_SHA256.
+HOSTED_OWNER_ID = "ws_" + hashlib.sha256(b"rsi-gateway-hosted-owner-v1").hexdigest()[:32]
+_EMAIL = re.compile(r"[^@\s]{1,64}@[^@\s]{1,189}\.[A-Za-z]{2,63}")
 
 
 class StoreError(RuntimeError):
@@ -24,6 +29,10 @@ class StoreError(RuntimeError):
 
 class Conflict(StoreError):
     """A request conflicts with already recorded state."""
+
+
+class InvalidInput(StoreError, ValueError):
+    """Caller-supplied data was rejected; the API reports it as a bad request."""
 
 
 class BudgetExceeded(StoreError):
@@ -99,6 +108,17 @@ CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY,
     last_seen REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS access_requests (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    use_case TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'declined')),
+    workspace_id TEXT REFERENCES workspaces (id),
+    created_at REAL NOT NULL,
+    decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS access_requests_state ON access_requests (state, created_at);
 """
 
 _USAGE = """
@@ -154,9 +174,16 @@ def _committed(usage: dict) -> int:
 class Store:
     """Keep each job transition and associated usage change atomic in SQLite."""
 
-    def __init__(self, path: str | os.PathLike[str], *, clock: Callable[[], float] = time.time):
+    def __init__(
+        self, path: str | os.PathLike[str], *, clock: Callable[[], float] = time.time,
+        site_spend_limit_microusd: int | None = None,
+    ):
         self.path = Path(path).absolute()
         self._now = clock
+        if site_spend_limit_microusd is not None:
+            _integer(site_spend_limit_microusd, "Site spend limit", 0, MAX_COST_MICROUSD)
+        # A ceiling on committed model spend across every workspace, on top of each workspace's own limit.
+        self.site_spend_limit_microusd = site_spend_limit_microusd
         try:
             descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -234,7 +261,7 @@ class Store:
         """Provision the hosted workspace once. Never replace or reissue its key."""
         if len(token_hash) != 64 or any(char not in "0123456789abcdef" for char in token_hash):
             raise StoreError("The hosted workspace key hash must be 64 lowercase hexadecimal characters.")
-        workspace_id = "ws_" + hashlib.sha256(b"rsi-gateway-hosted-owner-v1").hexdigest()[:32]
+        workspace_id = HOSTED_OWNER_ID
         with self._transaction() as connection:
             if connection.execute("SELECT 1 FROM workspaces WHERE id = ?", (workspace_id,)).fetchone():
                 return
@@ -282,6 +309,16 @@ class Store:
             "SELECT spend_limit_microusd FROM workspace_limits WHERE workspace_id = ?", (workspace_id,),
         ).fetchone()
         return {**dict(row), "spend_limit_microusd": limit[0] if limit is not None else 0}
+
+    @staticmethod
+    def _site_usage(connection: sqlite3.Connection) -> dict:
+        return dict(connection.execute("SELECT " + _USAGE + " FROM dispatches AS d").fetchone())
+
+    def site_usage(self) -> dict:
+        """Model usage across every workspace, with the site-wide ceiling if one is set."""
+        with self._transaction(write=False) as connection:
+            usage = self._site_usage(connection)
+        return {**usage, "site_spend_limit_microusd": self.site_spend_limit_microusd}
 
     @classmethod
     def _view(cls, connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
@@ -495,6 +532,10 @@ class Store:
                 workspace_usage = self._workspace_usage(connection, row["workspace_id"])
                 if _committed(workspace_usage) + max_cost_microusd > workspace_usage["spend_limit_microusd"]:
                     raise BudgetExceeded("There is insufficient workspace spend allowance for the next dispatch.")
+                if self.site_spend_limit_microusd is not None:
+                    site = self._site_usage(connection)
+                    if _committed(site) + max_cost_microusd > self.site_spend_limit_microusd:
+                        raise BudgetExceeded("The gateway has reached its total model spend limit for now.")
             connection.execute(
                 """INSERT INTO dispatches (id, job_id, stage, state, max_cost_microusd, created_at)
                    VALUES (?, ?, ?, 'reserved', ?, ?)""",
@@ -638,6 +679,95 @@ class Store:
                 connection.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, entry["job_id"]))
             row = connection.execute("SELECT * FROM dispatches WHERE id = ?", (reservation_id,)).fetchone()
             return dict(row)
+
+    @staticmethod
+    def _request_view(row: sqlite3.Row) -> dict:
+        return {key: row[key] for key in row.keys()}
+
+    def request_access(self, email: str, name: str, use_case: str) -> dict:
+        """Queue a request for a workspace key. A repeat request from a pending address is not duplicated."""
+        if not isinstance(email, str) or len(email.strip()) > 254 or not _EMAIL.fullmatch(email.strip()):
+            raise InvalidInput("Enter a valid email address.")
+        if name is not None and (not isinstance(name, str) or len(name) > 120):
+            raise InvalidInput("Keep your name to 120 characters or fewer.")
+        if not isinstance(use_case, str) or not 10 <= len(use_case.strip()) <= 2000:
+            raise InvalidInput("Describe what you want to improve in 10 to 2,000 characters.")
+        email = email.strip().lower()
+        name = name.strip() if isinstance(name, str) and name.strip() else "Not given"
+        use_case = use_case.strip()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM access_requests WHERE email = ? AND state = 'pending'", (email,),
+            ).fetchone()
+            if existing is not None:
+                return self._request_view(existing)
+            pending = connection.execute("SELECT COUNT(*) FROM access_requests WHERE state = 'pending'").fetchone()[0]
+            if pending >= MAX_PENDING_REQUESTS:
+                raise Conflict("The request queue is full. Please try again later.")
+            request_id = _id("req")
+            connection.execute(
+                """INSERT INTO access_requests (id, email, name, use_case, state, created_at)
+                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                (request_id, email, name, use_case, self._now()),
+            )
+            return self._request_view(connection.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone())
+
+    def access_requests(self, state: str | None = "pending", limit: int = 100) -> list[dict]:
+        _integer(limit, "Access request list limit", 1, 500)
+        if state not in (None, "pending", "approved", "declined"):
+            raise StoreError("Filter access requests by pending, approved, or declined.")
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """SELECT * FROM access_requests WHERE (? IS NULL OR state = ?)
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (state, state, limit),
+            )
+            return [self._request_view(row) for row in rows]
+
+    def approve_access(self, request_id: str, spend_limit_microusd: int) -> dict:
+        """Create the requester's workspace and write key in one step. The token is returned only here."""
+        _integer(spend_limit_microusd, "Workspace spend limit", 0, MAX_COST_MICROUSD)
+        with self._transaction() as connection:
+            row = connection.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise InvalidInput("Unknown access request.")
+            if row["state"] != "pending":
+                raise Conflict(f"This request was already {row['state']}.")
+            now = self._now()
+            workspace_id = _id("ws")
+            connection.execute(
+                "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)",
+                (workspace_id, row["email"][:128], now),
+            )
+            connection.execute(
+                "INSERT INTO workspace_limits (workspace_id, spend_limit_microusd) VALUES (?, ?)",
+                (workspace_id, spend_limit_microusd),
+            )
+            key_id = _id("key")
+            token = "rsi_" + secrets.token_urlsafe(32)
+            connection.execute(
+                "INSERT INTO workspace_keys (id, workspace_id, role, token_hash, created_at) VALUES (?, ?, 'write', ?, ?)",
+                (key_id, workspace_id, hashlib.sha256(token.encode("ascii")).hexdigest(), now),
+            )
+            connection.execute(
+                "UPDATE access_requests SET state = 'approved', workspace_id = ?, decided_at = ? WHERE id = ?",
+                (workspace_id, now, request_id),
+            )
+            request = self._request_view(connection.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone())
+        return {"request": request, "workspace_id": workspace_id, "spend_limit_microusd": spend_limit_microusd,
+                "key": {"id": key_id, "token": token}}
+
+    def decline_access(self, request_id: str) -> dict:
+        with self._transaction() as connection:
+            row = connection.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone()
+            if row is None:
+                raise InvalidInput("Unknown access request.")
+            if row["state"] != "pending":
+                raise Conflict(f"This request was already {row['state']}.")
+            connection.execute(
+                "UPDATE access_requests SET state = 'declined', decided_at = ? WHERE id = ?", (self._now(), request_id),
+            )
+            return self._request_view(connection.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone())
 
     def backup(self, path: str | os.PathLike[str]) -> None:
         """Write a consistent online backup into a new owner-readable file."""

@@ -200,6 +200,45 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(backup.get(self.workspace, job_id), self.store.get(self.workspace, job_id))
         self.assertEqual(backup.ledger(self.workspace), self.store.ledger(self.workspace))
 
+    def test_access_requests_dedupe_and_approval_issues_one_scoped_key(self):
+        first = self.store.request_access(" Ada@Example.com ", "Ada", "Improve my support ticket router.")
+        again = self.store.request_access("ada@example.com", None, "A second message about the same router.")
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(first["email"], "ada@example.com")
+        with self.assertRaises(ValueError):
+            self.store.request_access("not-an-email", "Bob", "Something worth improving.")
+        with self.assertRaises(ValueError):
+            self.store.request_access("bob@example.com", "Bob", "short")
+        approved = self.store.approve_access(first["id"], 250_000)
+        identity = self.store.authenticate(approved["key"]["token"])
+        self.assertEqual(identity, {"workspace_id": approved["workspace_id"], "role": "write"})
+        self.assertEqual(self.store.usage(approved["workspace_id"])["spend_limit_microusd"], 250_000)
+        self.assertEqual(self.store.access_requests("approved")[0]["workspace_id"], approved["workspace_id"])
+        self.assertEqual(self.store.access_requests(), [])
+        with self.assertRaises(Conflict):
+            self.store.approve_access(first["id"], 0)
+        # A new request after a decision is a new request.
+        second = self.store.request_access("ada@example.com", "Ada", "Another project to improve.")
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(self.store.decline_access(second["id"])["state"], "declined")
+        with self.assertRaises(Conflict):
+            self.store.decline_access(second["id"])
+
+    def test_site_limit_caps_committed_spend_across_workspaces(self):
+        capped = Store(self.path, clock=lambda: self.now, site_spend_limit_microusd=100)
+        other = capped.create_workspace("Other", spend_limit_microusd=1000)
+        capped.submit(self.workspace, self.request)
+        capped.submit(other, self.request)
+        first, second = capped.claim(), capped.claim()
+        reservation = capped.reserve(first["id"], first["lease_token"], 70, "proposal")
+        with self.assertRaisesRegex(BudgetExceeded, "total model spend"):
+            capped.reserve(second["id"], second["lease_token"], 40, "proposal")
+        capped.settle(first["id"], first["lease_token"], reservation, 50)
+        capped.reserve(second["id"], second["lease_token"], 40, "proposal")
+        self.assertEqual(capped.site_usage()["spent_microusd"], 50)
+        self.assertEqual(capped.site_usage()["reserved_microusd"], 40)
+        self.assertEqual(capped.site_usage()["site_spend_limit_microusd"], 100)
+
     def test_time_limit_and_worker_readiness(self):
         self.assertFalse(self.store.worker_ready())
         self.store.worker_seen("worker-1")

@@ -61,10 +61,13 @@ def load_adapters(modules: str = "") -> dict[str, Adapter]:
     return adapters
 
 
-def load_evidence(path: str | None) -> list[dict]:
-    if not path:
+def load_evidence(path: str | None, *, config_json: str | None = None) -> list[dict]:
+    """Load benchmark rows for the auto route from a file or, for hosted deployments, JSON text."""
+    if path and config_json:
+        raise ValueError("Configure routing evidence using a file or environment JSON, not both.")
+    if not path and not config_json:
         return []
-    entries = json.loads(Path(path).read_text(encoding="utf-8"))
+    entries = json.loads(config_json if config_json else Path(path).read_text(encoding="utf-8"))
     if not isinstance(entries, list):
         raise ValueError("Routing evidence must be an array.")
     for row in entries:

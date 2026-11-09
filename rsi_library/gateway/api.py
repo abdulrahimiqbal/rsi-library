@@ -6,14 +6,16 @@ import json
 import re
 import sqlite3
 import threading
+import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
-from .methods import evidence_policy, validate_request
+from .methods import catalog as method_catalog, evidence_policy, validate_request
 from .providers import Model
 from .routing import Adapter, choose
-from .store import Conflict, Store, StoreError
+from .store import MAX_COST_MICROUSD, Conflict, Store, StoreError
 
 
 _ASSETS = {
@@ -22,9 +24,37 @@ _ASSETS = {
     "/styles.css": ("styles.css", "text/css"),
 }
 _JOB_PATH = re.compile(r"/v1/jobs/(job_[a-f0-9]{32})(/cancel)?")
+_REQUEST_PATH = re.compile(r"/v1/operator/access-requests/(req_[a-f0-9]{32})/(approve|decline)")
 _IDEMPOTENCY = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _MAX_BODY = 160 * 1024
+_MAX_ACCESS_BODY = 8 * 1024
 _LIMIT = 32
+
+
+class _RateLimit:
+    """Allow a few events per client and per window, plus a total, in this process."""
+
+    def __init__(self, per_client: int, total: int, window_seconds: float):
+        self.per_client, self.total, self.window = per_client, total, window_seconds
+        self._clients: dict[str, deque[float]] = {}
+        self._all: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def allow(self, client: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            while self._all and now - self._all[0] > self.window:
+                self._all.popleft()
+            for key in [key for key, events in self._clients.items() if not events or now - events[-1] > self.window]:
+                del self._clients[key]
+            events = self._clients.setdefault(client, deque())
+            while events and now - events[0] > self.window:
+                events.popleft()
+            if len(events) >= self.per_client or len(self._all) >= self.total:
+                return False
+            events.append(now)
+            self._all.append(now)
+            return True
 
 
 def _summary(job: dict) -> dict:
@@ -45,14 +75,26 @@ class Gateway(ThreadingHTTPServer):
 
     def __init__(
         self, host: str, port: int, store: Store, adapters: dict[str, Adapter],
-        models: dict[str, Model], evidence: list[dict],
+        models: dict[str, Model], evidence: list[dict], *,
+        operator_workspace: str | None = None, access_requests: bool = False,
+        trust_proxy: bool = False, default_spend_microusd: int = 1_000_000,
     ):
         self.store = store
         self.adapters = adapters
         self.models = models
         self.evidence = evidence
+        # The workspace whose write keys may review access requests and see site-wide usage.
+        self.operator_workspace = operator_workspace
+        self.access_requests = access_requests
+        self.trust_proxy = trust_proxy
+        self.default_spend_microusd = default_spend_microusd
+        self.request_limit = _RateLimit(per_client=3, total=60, window_seconds=3600)
         self.slots = threading.BoundedSemaphore(_LIMIT)
         super().__init__((host, port), Handler)
+
+    @property
+    def mode(self) -> str:
+        return "demo" if self.models and all(model.demo for model in self.models.values()) else "live"
 
     def process_request(self, request, client_address) -> None:
         if not self.slots.acquire(blocking=False):
@@ -120,13 +162,24 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return identity
 
-    def _body(self) -> dict:
+    def _client(self) -> str:
+        if self.server.trust_proxy:
+            # Behind the hosting edge, the client's address arrives in a forwarding header.
+            forwarded = self.headers.get("X-Real-IP") or (self.headers.get("X-Forwarded-For") or "").split(",")[0]
+            if forwarded.strip():
+                return forwarded.strip()[:64]
+        return self.client_address[0]
+
+    def _operator(self, identity: dict) -> bool:
+        return self.server.operator_workspace is not None and identity["workspace_id"] == self.server.operator_workspace
+
+    def _body(self, limit: int = _MAX_BODY) -> dict:
         lengths = self.headers.get_all("Content-Length", [])
         if len(lengths) != 1 or not lengths[0].isdigit() or self.headers.get("Transfer-Encoding"):
             raise ValueError("Provide a valid JSON content length.")
         length = int(lengths[0])
-        if not 0 < length <= _MAX_BODY:
-            raise ValueError("The JSON request must be smaller than 160 KiB.")
+        if not 0 < length <= limit:
+            raise ValueError(f"The JSON request must be smaller than {limit // 1024} KiB.")
         if self.headers.get_content_type() != "application/json":
             raise ValueError("Send the job as application/json.")
         payload = json.loads(self.rfile.read(length))
@@ -170,6 +223,17 @@ class Handler(BaseHTTPRequestHandler):
             ready = bool(self.server.models) and store.worker_ready()
             self._json(200 if ready else 503, {"status": "ready" if ready else "unavailable"})
             return
+        if not write and path == "/public/info":
+            self._json(200, {
+                "mode": self.server.mode,
+                "access_requests": self.server.access_requests,
+                "methods": [{key: entry[key] for key in ("id", "name", "description")} for entry in method_catalog()],
+                "evidence_policy": evidence_policy(),
+            })
+            return
+        if write and path == "/access-requests":
+            self._access_request()
+            return
         if not path.startswith("/v1/"):
             self._error(404, "Route not found.")
             return
@@ -177,9 +241,13 @@ class Handler(BaseHTTPRequestHandler):
         if identity is None:
             return
         workspace = identity["workspace_id"]
+        if path.startswith("/v1/operator/"):
+            self._operator_route(identity, path, url.query, write=write)
+            return
         if not write and path == "/v1/catalog":
             self._json(200, {
                 **identity,
+                "operator": self._operator(identity),
                 "methods": [adapter.metadata for adapter in self.server.adapters.values()],
                 "models": [model.public() for model in self.server.models.values()],
                 "evidence_policy": evidence_policy(),
@@ -214,3 +282,44 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, job)
                 return
         self._error(404, "Job or route not found.")
+
+    def _access_request(self) -> None:
+        if not self.server.access_requests:
+            self._error(404, "Access requests are not open on this gateway.")
+            return
+        if not self.server.request_limit.allow(self._client()):
+            self._error(429, "Too many requests. Please try again later.")
+            return
+        payload = self._body(_MAX_ACCESS_BODY)
+        if payload.keys() - {"email", "name", "use_case", "website"}:
+            raise ValueError("Send email, name, and use_case.")
+        # Browsers fill hidden fields that people don't see; treat a filled one as automated.
+        if not payload.get("website"):
+            self.server.store.request_access(payload.get("email"), payload.get("name"), payload.get("use_case"))
+        # The same reply for new, repeated, and screened requests reveals nothing about other addresses.
+        self._json(202, {"status": "received"})
+
+    def _operator_route(self, identity: dict, path: str, query: str, *, write: bool) -> None:
+        if not self._operator(identity) or identity["role"] != "write":
+            self._error(403, "Operator access requires a write key for the operator workspace.")
+            return
+        store = self.server.store
+        if not write and path == "/v1/operator/access-requests":
+            state = parse_qs(query, max_num_fields=2).get("state", ["pending"])[0]
+            self._json(200, {"requests": store.access_requests(None if state == "all" else state)})
+            return
+        if not write and path == "/v1/operator/usage":
+            self._json(200, {"usage": store.site_usage()})
+            return
+        match = _REQUEST_PATH.fullmatch(path)
+        if write and match:
+            if match[2] == "decline":
+                self._json(200, {"request": store.decline_access(match[1])})
+                return
+            payload = self._body(_MAX_ACCESS_BODY)
+            limit = payload.get("spend_limit_microusd", self.server.default_spend_microusd)
+            if payload.keys() - {"spend_limit_microusd"} or type(limit) is not int or not 0 <= limit <= MAX_COST_MICROUSD:
+                raise ValueError("Set spend_limit_microusd to a whole number of microdollars.")
+            self._json(200, store.approve_access(match[1], limit))
+            return
+        self._error(404, "Operator route not found.")
