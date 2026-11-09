@@ -141,11 +141,10 @@ class Worker:
         )
         if not isinstance(proposed, dict) or "candidate" not in proposed:
             raise ValueError("The external optimizer did not return a candidate.")
-        progress({"stage": "baseline_holdout"})
         return {
             "method": method,
             "trials": proposed.get("trials", []),
-            **verify_candidate(request, proposed["candidate"], complete),
+            **verify_candidate(request, proposed["candidate"], complete, lambda stage: progress({"stage": stage})),
         }
 
     def run(self) -> None:

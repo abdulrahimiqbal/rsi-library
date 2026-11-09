@@ -14,6 +14,8 @@ import random
 import re
 import unicodedata
 
+from ..stats import ALPHA, minimum_wins, paired_comparison
+
 
 class MethodError(ValueError):
     """An optimization request or method result could not be used."""
@@ -45,6 +47,12 @@ _MAX_CHAIN_BYTES = 8_000
 _MAX_INPUT_BYTES = 4_000
 _MAX_OUTPUT_BYTES = 4_000
 _MAX_FEEDBACK_CASES = 5
+MAX_TRAIN_CASES = 32
+# Below eight paired cases a significant gain is barely reachable, so the job would
+# spend money on a decision it can't make.
+MIN_HOLDOUT_CASES = 8
+MAX_HOLDOUT_CASES = 64
+MAX_HOLDOUT_REPEATS = 5
 _MODEL_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:@/-]{0,127}")
 _STEP_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{0,31}")
 
@@ -57,6 +65,18 @@ def catalog() -> list[dict]:
         {"id": key, "name": name, "description": description, "artifact_types": list(types)}
         for key, (name, description, types) in _METHODS.items()
     ]
+
+
+def evidence_policy() -> dict:
+    """The acceptance rule every job is held to, published in the catalog."""
+    return {
+        "test": "one-sided exact sign test on paired holdout cases",
+        "alpha": ALPHA,
+        "min_holdout_cases": MIN_HOLDOUT_CASES,
+        "max_holdout_cases": MAX_HOLDOUT_CASES,
+        "max_holdout_repeats": MAX_HOLDOUT_REPEATS,
+        "minimum_wins_at_min_holdout": minimum_wins(MIN_HOLDOUT_CASES, ALPHA),
+    }
 
 
 def compatible_methods(request: dict) -> tuple[str, ...]:
@@ -130,10 +150,11 @@ def _task(raw: object) -> dict:
     task = _fields(raw, "task", {"train", "holdout"})
     inputs = set()
     splits = {}
-    for name, limit in (("train", 32), ("holdout", 24)):
+    for name, low, high in (("train", 1, MAX_TRAIN_CASES), ("holdout", MIN_HOLDOUT_CASES, MAX_HOLDOUT_CASES)):
         cases = task[name]
-        if not isinstance(cases, list) or not 1 <= len(cases) <= limit:
-            raise MethodError(f"task.{name} must contain between 1 and {limit} cases.")
+        if not isinstance(cases, list) or not low <= len(cases) <= high:
+            hint = " A smaller holdout set can't show a statistically significant gain." if name == "holdout" else ""
+            raise MethodError(f"task.{name} must contain between {low} and {high} cases.{hint}")
         split = []
         for case in cases:
             row = _fields(case, "task case", {"input", "expected"})
@@ -151,17 +172,23 @@ def _step_count(artifact: dict) -> int:
     return len(artifact["steps"]) if artifact["type"] == "prompt-chain" else 1
 
 
+def verification_calls(request: dict) -> int:
+    """Calls reserved for scoring the original and the candidate on every holdout case."""
+    repeats = request.get("holdout_repeats", 1)
+    return 2 * len(request["task"]["holdout"]) * _step_count(request["artifact"]) * repeats
+
+
 def minimum_calls(request: dict) -> int:
-    """Capacity for one proposal plus paired train and holdout evaluation."""
-    count = len(request["task"]["train"]) + len(request["task"]["holdout"])
-    return 2 * count * _step_count(request["artifact"]) + 1
+    """Capacity for one proposal, paired training evaluation, and holdout verification."""
+    train = len(request["task"]["train"]) * _step_count(request["artifact"])
+    return 2 * train + 1 + verification_calls(request)
 
 
 def validate_request(payload: object, extra_method_ids: Collection[str] = ()) -> dict:
     """Normalize the gateway request and reject unsupported fields and artifact shapes."""
     raw = _fields(
         payload, "job", {"method", "artifact", "task", "budget"},
-        {"max_trials", "model", "seed", "objective", "data_policy"},
+        {"max_trials", "model", "seed", "objective", "data_policy", "holdout_repeats"},
     )
     method = raw["method"]
     if not isinstance(method, str) or (method != "auto" and method not in _METHODS and method not in extra_method_ids):
@@ -186,6 +213,7 @@ def validate_request(payload: object, extra_method_ids: Collection[str] = ()) ->
         "seed": _integer(raw.get("seed", 0), "seed", 0, 2**32 - 1),
         "objective": objective,
         "data_policy": data_policy,
+        "holdout_repeats": _integer(raw.get("holdout_repeats", 1), "holdout_repeats", 1, MAX_HOLDOUT_REPEATS),
     }
     if "model" in raw:
         model = raw["model"]
@@ -327,12 +355,26 @@ def _execution_identity(artifact: dict) -> str:
     return _identity({key: value for key, value in artifact.items() if key != "improver"})
 
 
-def verification_calls(request: dict) -> int:
-    return 2 * len(request["task"]["holdout"]) * _step_count(request["artifact"])
+def _holdout_scores(
+    artifact: dict, cases: list[dict], stage: str, objective: str, repeats: int, invoke: Completion,
+) -> list[float]:
+    """Score every holdout case ``repeats`` times and average the tries per case."""
+    totals = [0] * len(cases)
+    for _ in range(repeats):
+        for index, row in enumerate(_evaluate(artifact, cases, stage, objective, invoke)):
+            totals[index] += row["correct"]
+    return [total / repeats for total in totals]
 
 
-def verify_candidate(request: dict, proposed: object, invoke: Completion) -> dict:
-    """Score the candidate and original without relying on optimizer-reported scores."""
+def verify_candidate(
+    request: dict, proposed: object, invoke: Completion, report: Callable[[str], None] | None = None,
+) -> dict:
+    """Score the original and the candidate on the same holdout cases and test the paired difference.
+
+    The decision never relies on optimizer-reported scores. The candidate replaces the
+    original only when the gain is statistically significant; a gain that could be
+    chance is reported as inconclusive and the original is kept.
+    """
     original = request["artifact"]
     candidate = _artifact(proposed)
     if candidate["type"] != original["type"]:
@@ -340,18 +382,30 @@ def verify_candidate(request: dict, proposed: object, invoke: Completion) -> dic
     if original["type"] == "prompt-chain" and [step["name"] for step in candidate["steps"]] != [step["name"] for step in original["steps"]]:
         raise MethodError("The optimizer changed the workflow steps.")
     holdout, objective = request["task"]["holdout"], request["objective"]
-    before = _Trial(0, original, _evaluate(original, holdout, "baseline_holdout", objective, invoke))
+    repeats = request.get("holdout_repeats", 1)
+    if report is not None:
+        report("baseline_holdout")
+    before = _holdout_scores(original, holdout, "baseline_holdout", objective, repeats, invoke)
     after = before
-    if _execution_identity(candidate) != _execution_identity(original):
-        after = _Trial(1, candidate, _evaluate(candidate, holdout, "candidate_holdout", objective, invoke))
-    accepted = after.correct > before.correct
+    changed = _execution_identity(candidate) != _execution_identity(original)
+    if changed:
+        if report is not None:
+            report("candidate_holdout")
+        after = _holdout_scores(candidate, holdout, "candidate_holdout", objective, repeats, invoke)
+    evidence = paired_comparison(before, after, alpha=ALPHA)
+    evidence["repeats"] = repeats
+    if not changed:
+        evidence["note"] = "The optimizer did not change how the artifact runs, so there was nothing to test."
+    accepted = evidence["verdict"] == "improved"
     return {
-        "baseline_holdout": before.score,
-        "candidate_holdout": after.score,
+        "baseline_holdout": evidence["baseline_score"],
+        "candidate_holdout": evidence["candidate_score"],
         "accepted": accepted,
         "candidate": candidate,
         "artifact": candidate if accepted else original,
         "holdout_cases": len(holdout),
+        "holdout_repeats": repeats,
+        "evidence": evidence,
     }
 
 
@@ -376,10 +430,9 @@ def execute(
 
     original = request["artifact"]
     train = request["task"]["train"]
-    holdout = request["task"]["holdout"]
     objective = request["objective"]
     train_cost = len(train) * _step_count(original)
-    holdout_cost = 2 * len(holdout) * _step_count(original)
+    holdout_cost = verification_calls(request)
     planned = min(request["max_trials"], (cap - train_cost - holdout_cost) // (1 + train_cost))
     calls = 0
 
@@ -428,26 +481,14 @@ def execute(
         trace.append({**entry, "status": "evaluated", "score": trial.score, "artifact": candidate})
 
     winner = max(scored, key=lambda trial: trial.correct)
-    report("baseline_holdout", planned)
-    before = _Trial(0, original, _evaluate(original, holdout, "baseline_holdout", objective, invoke))
-    after = before
-    if winner.id != 0:
-        report("candidate_holdout", planned)
-        after = _Trial(winner.id, winner.artifact, _evaluate(winner.artifact, holdout, "candidate_holdout", objective, invoke))
-
-    accepted = after.correct > before.correct
+    verified = verify_candidate(request, winner.artifact, invoke, lambda stage: report(stage, planned))
     return {
         "method": method_id,
         "baseline_train": baseline.score,
         "best_train": winner.score,
-        "baseline_holdout": before.score,
-        "candidate_holdout": after.score,
-        "accepted": accepted,
-        "artifact": winner.artifact if accepted else original,
-        "candidate": winner.artifact,
+        **verified,
         "candidate_trial_id": winner.id,
         "trials": trace,
-        "holdout_cases": len(holdout),
         "train_cases": len(train),
         "model_calls": calls,
     }

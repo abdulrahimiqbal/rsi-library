@@ -24,9 +24,10 @@ def job():
         "artifact": {"type": "prompt", "text": "Always return account."},
         "task": {
             "train": [{"input": "Please resend the invoice", "expected": "billing"}],
-            "holdout": [{"input": "Unique holdout: why was I charged?", "expected": "billing"}],
+            "holdout": [{"input": f"Unique holdout {index}: why was I charged?", "expected": "billing"} for index in range(8)],
         },
-        "budget": {"max_calls": 8, "max_cost_microusd": 60_000, "max_seconds": 20},
+        # One training pass for each version, one proposal, and both versions on eight holdout cases.
+        "budget": {"max_calls": 19, "max_cost_microusd": 100_000, "max_seconds": 20},
         "max_trials": 1,
         "model": "stub",
         "objective": "exact",
@@ -78,7 +79,7 @@ class GatewayRouting(unittest.TestCase):
         self.assertIsNone(pinned["benchmark"])
         chain = {**payload, "artifact": {
             "type": "prompt-chain", "steps": [{"name": "summarize", "text": "Summarize."}, {"name": "classify", "text": "Label."}],
-        }, "budget": {**payload["budget"], "max_calls": 10}}
+        }, "budget": {**payload["budget"], "max_calls": 37}}
         self.assertNotEqual(choose(validate_request(chain), adapters, models, evidence)["method"], "self-revise-v1")
         private_job = validate_request({**payload, "data_policy": "zero-retention"})
         self.assertEqual(choose(private_job, adapters, models, evidence)["model"], "demo")
@@ -101,7 +102,7 @@ class GatewayRouting(unittest.TestCase):
             }
 
         adapters[name] = Adapter({"id": name, "artifact_types": ["prompt"]}, optimize, lambda request: 1, external=True)
-        payload = {**job(), "method": name, "model": "demo", "budget": {**job()["budget"], "max_calls": 3}}
+        payload = {**job(), "method": name, "model": "demo", "budget": {**job()["budget"], "max_calls": 17}}
         request = validate_request(payload, adapters.keys())
         request["_routing"] = choose(request, adapters, models, [])
         with tempfile.TemporaryDirectory() as directory:
@@ -111,9 +112,10 @@ class GatewayRouting(unittest.TestCase):
             self.assertTrue(Worker(store, adapters, models).once())
             result = store.get(workspace, queued["id"])
         self.assertEqual(result["state"], "succeeded")
-        self.assertEqual(result["usage"]["calls"], 3)
+        self.assertEqual(result["usage"]["calls"], 17)
         self.assertEqual(result["result"]["candidate_holdout"], 0)
         self.assertFalse(result["result"]["accepted"])
+        self.assertEqual(result["result"]["evidence"]["verdict"], "not_improved")
         self.assertEqual(result["result"]["artifact"], request["artifact"])
 
 
@@ -202,8 +204,10 @@ class GatewayHTTP(unittest.TestCase):
         self.assertEqual(outcome["result"]["baseline_holdout"], 0)
         self.assertEqual(outcome["result"]["candidate_holdout"], 1)
         self.assertTrue(outcome["result"]["accepted"])
-        self.assertEqual(outcome["usage"]["calls"], 5)
-        self.assertEqual(outcome["usage"]["spent_microusd"], 150)
+        self.assertEqual(outcome["result"]["evidence"]["verdict"], "improved")
+        self.assertEqual(outcome["result"]["evidence"]["p_value"], 1 / 256)
+        self.assertEqual(outcome["usage"]["calls"], 19)
+        self.assertEqual(outcome["usage"]["spent_microusd"], 19 * 30)
         self.assertEqual(outcome["usage"]["uncertain_microusd"], 0)
         proposals = [call for call in self.provider.received if "training evidence" in call["messages"][0]["content"]]
         self.assertEqual(len(proposals), 1)
@@ -211,6 +215,9 @@ class GatewayHTTP(unittest.TestCase):
         _, listing = self._request("/v1/jobs", token=self.key)
         self.assertNotIn("task", listing["jobs"][0]["request"])
         self.assertNotIn("trials", listing["jobs"][0]["result"])
+        self.assertEqual(listing["jobs"][0]["result"]["verdict"], "improved")
+        _, catalog = self._request("/v1/catalog", token=self.reader)
+        self.assertEqual(catalog["evidence_policy"]["min_holdout_cases"], 8)
         self.assertEqual(self._request("/health/ready")[0], 200)
 
     def test_unknown_charge_is_preserved_and_never_replayed(self):

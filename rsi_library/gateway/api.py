@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
-from .methods import validate_request
+from .methods import evidence_policy, validate_request
 from .providers import Model
 from .routing import Adapter, choose
 from .store import Conflict, Store, StoreError
@@ -34,6 +34,8 @@ def _summary(job: dict) -> dict:
     result_summary = None if result is None else {
         field: result[field] for field in ("method", "baseline_holdout", "candidate_holdout", "accepted", "routing") if field in result
     }
+    if result_summary is not None and isinstance(result.get("evidence"), dict):
+        result_summary["verdict"] = result["evidence"].get("verdict")
     return {**job, "request": request_summary, "result": result_summary}
 
 
@@ -180,6 +182,7 @@ class Handler(BaseHTTPRequestHandler):
                 **identity,
                 "methods": [adapter.metadata for adapter in self.server.adapters.values()],
                 "models": [model.public() for model in self.server.models.values()],
+                "evidence_policy": evidence_policy(),
             })
             return
         if not write and path == "/v1/usage":
