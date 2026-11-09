@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>RSI Library | Gateway Workbench</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b281e'/%3E%3Cpath d='M23 11a8 8 0 1 0 1 9M23 7v5h-5' fill='none' stroke='%23d9ee91' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to workbench</a>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">↺</span>
+        <span>RSI <strong>Library</strong></span>
+      </a>
+      <nav aria-label="Workbench">
+        <a href="#new-job">New job</a>
+        <a href="#workspace-jobs">Job history</a>
+      </nav>
+      <div class="session">
+        <span id="connection-status" class="connection-status">Disconnected</span>
+        <button id="disconnect" type="button" class="quiet" hidden>Disconnect</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell" id="main">
+    <div class="hero">
+      <div>
+        <p class="eyebrow">RSI Library <span aria-hidden="true">/</span> Gateway</p>
+        <h1>Improve an artifact<span>.</span></h1>
+        <p>Set a budget, choose an optimizer, and check the result against your holdout tests.</p>
+      </div>
+      <form id="connect-form" class="connect-form" autocomplete="off">
+        <label for="api-key">Workspace API key</label>
+        <div class="connect-row">
+          <input id="api-key" type="password" placeholder="Paste your API key" required spellcheck="false" autocapitalize="none" autocomplete="off">
+          <button id="connect" type="submit" class="primary">Connect</button>
+        </div>
+        <p class="hint">Your key stays in this tab until you disconnect or reload.</p>
+      </form>
+      <div class="workspace-tag" id="workspace-tag" hidden>
+        <span class="eyebrow">Connected workspace</span>
+        <strong id="workspace-id"></strong>
+        <span id="workspace-role" class="hint"></span>
+      </div>
+    </div>
+    <p id="session-message" class="notice" role="status"></p>
+
+    <div class="workbench">
+      <section id="new-job" class="panel composer" aria-labelledby="new-title">
+        <div class="section-heading">
+          <p class="eyebrow">01 / Configure</p>
+          <h2 id="new-title">New improvement job</h2>
+        </div>
+        <form id="job-form">
+          <fieldset id="job-fields" disabled>
+            <div class="form-grid">
+              <label>Artifact type
+                <select id="artifact-type">
+                  <option value="prompt">Prompt</option>
+                  <option value="prompt-chain">Prompt chain</option>
+                </select>
+              </label>
+              <label>Optimizer
+                <select id="method">
+                  <option value="auto">Auto route</option>
+                </select>
+              </label>
+              <label>Model
+                <select id="model">
+                  <option value="">Connect to load models</option>
+                </select>
+              </label>
+              <label>Scoring
+                <select id="objective">
+                  <option value="normalized">Ignore case and spacing</option>
+                  <option value="exact">Exact match</option>
+                </select>
+              </label>
+              <label>Model provider retention
+                <select id="data-policy">
+                  <option value="any">Any configured provider</option>
+                  <option value="zero-retention">Require zero retention</option>
+                </select>
+              </label>
+            </div>
+            <p id="method-description" class="hint"></p>
+            <label id="prompt-field">Starting prompt
+              <textarea id="prompt-text" rows="4" maxlength="4000" spellcheck="false"></textarea>
+            </label>
+            <label id="chain-field" hidden>Starting steps <span class="hint">(JSON)</span>
+              <textarea id="chain-steps" rows="5" maxlength="24000" spellcheck="false" aria-describedby="chain-hint"></textarea>
+              <span id="chain-hint" class="hint">Use two to four ordered steps with a name and prompt text.</span>
+            </label>
+            <label id="improver-field" hidden>Starting improver instructions <span class="hint">(optional)</span>
+              <textarea id="improver-text" rows="3" maxlength="4000" spellcheck="false"></textarea>
+            </label>
+            <details class="fixtures">
+              <summary>
+                <span>Training and holdout tests</span>
+                <span class="hint" id="fixture-counts"></span>
+              </summary>
+              <div class="fixture-inner">
+                <p class="hint">Optimizers see training examples. The final check uses the separate holdout set.</p>
+                <div class="form-grid">
+                  <label>Training cases <span class="hint">(JSON)</span>
+                    <textarea id="train" rows="7" maxlength="50000" spellcheck="false"></textarea>
+                  </label>
+                  <label>Holdout cases <span class="hint">(JSON)</span>
+                    <textarea id="holdout" rows="7" maxlength="50000" spellcheck="false"></textarea>
+                  </label>
+                </div>
+                <button id="load-example" class="quiet" type="button">Restore example</button>
+              </div>
+            </details>
+            <fieldset class="budget">
+              <legend>Job limits</legend>
+              <div class="form-grid budget-grid">
+                <label>Candidate trials
+                  <input id="max-trials" type="number" inputmode="numeric" min="1" max="50" step="1" value="3" required>
+                </label>
+                <label>Model calls
+                  <input id="max-calls" type="number" inputmode="numeric" min="1" max="1000" step="1" value="40" required>
+                </label>
+                <label>Spend cap (USD)
+                  <input id="max-cost" type="text" inputmode="decimal" value="0.25" required>
+                </label>
+                <label>Time limit (seconds)
+                  <input id="max-seconds" type="number" inputmode="numeric" min="1" max="3600" step="1" value="240" required>
+                </label>
+              </div>
+              <p class="hint" id="budget-hint">The model call limit covers proposals and scoring.</p>
+            </fieldset>
+          </fieldset>
+          <div class="actions">
+            <button id="submit-job" class="primary" type="submit" disabled>Queue job <span aria-hidden="true">↗</span></button>
+            <span id="submit-hint" class="hint">Connect with a workspace key to start a job.</span>
+          </div>
+          <p id="job-message" class="notice" role="status"></p>
+        </form>
+      </section>
+
+      <div class="results-stack" id="workspace-jobs">
+        <section class="panel history" aria-labelledby="history-title">
+          <div class="section-heading section-row">
+            <div>
+              <p class="eyebrow">02 / Track</p>
+              <h2 id="history-title">Job history</h2>
+            </div>
+            <button id="refresh-jobs" type="button" class="quiet" disabled>Refresh</button>
+          </div>
+          <p id="history-empty" class="empty">Connect to view jobs saved in your workspace.</p>
+          <ul id="jobs" class="job-list" aria-label="Saved jobs"></ul>
+        </section>
+        <section class="panel detail" aria-labelledby="detail-title">
+          <div class="section-heading">
+            <p class="eyebrow">03 / Inspect</p>
+            <h2 id="detail-title">Job details</h2>
+          </div>
+          <p id="detail-empty" class="empty">Select a job to see its status, usage, and results.</p>
+          <div id="detail-content" hidden>
+            <div class="detail-meta">
+              <span id="job-id" class="job-id"></span>
+              <span id="job-state" class="state-chip"></span>
+            </div>
+            <p id="job-method" class="hint"></p>
+            <dl id="usage" class="metric-grid" aria-label="Job usage"></dl>
+            <p id="uncertain-note" class="hint" hidden>Uncertain spend is reserved until the provider’s charge can be confirmed.</p>
+            <p id="run-error" class="notice error" hidden></p>
+            <p id="run-progress" class="hint" hidden></p>
+            <div id="result" hidden>
+              <p id="decision" class="decision"></p>
+              <dl id="scores" class="metric-grid" aria-label="Holdout scores"></dl>
+              <p id="holdout-size" class="hint" hidden></p>
+              <details id="artifact-output" class="output" open>
+                <summary id="artifact-title">Returned artifact</summary>
+                <pre id="artifact"></pre>
+              </details>
+              <details id="trials" class="output" hidden>
+                <summary>Trials</summary>
+                <pre id="trial-data"></pre>
+              </details>
+              <details id="routing" class="output" hidden>
+                <summary>Routing</summary>
+                <pre id="routing-data"></pre>
+              </details>
+            </div>
+            <div class="actions detail-actions">
+              <button id="cancel-job" type="button" class="quiet danger" hidden>Request cancellation</button>
+              <button id="download-artifact" type="button" class="quiet" hidden>Download artifact</button>
+              <button id="download-run" type="button" class="quiet" hidden>Download run JSON</button>
+            </div>
+            <p id="detail-message" class="notice" role="status"></p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="shell footer">
+    <span>RSI Library Gateway</span>
+    <span>Persistent jobs <span aria-hidden="true">·</span> Holdout evidence <span aria-hidden="true">·</span> Metered execution</span>
+  </footer>
+</body>
+</html>

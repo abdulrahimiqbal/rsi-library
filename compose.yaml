@@ -1,0 +1,38 @@
+services:
+  gateway:
+    build: .
+    command: ["serve", "--host", "0.0.0.0", "--port", "8766"]
+    environment:
+      RSI_MODEL_CONFIG: /config/models.json
+      RSI_ROUTING_EVIDENCE: /config/evidence.json
+    volumes:
+      - rsi-data:/data
+      - ./deployment/models.json:/config/models.json:ro
+      - ./deployment/evidence.json:/config/evidence.json:ro
+    ports:
+      - "127.0.0.1:8766:8766"
+    read_only: true
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready', timeout=2).close()"]
+      interval: 15s
+      timeout: 4s
+      retries: 4
+  worker:
+    build: .
+    command: ["worker"]
+    environment:
+      RSI_MODEL_CONFIG: /config/models.json
+    env_file: "${RSI_WORKER_ENV_FILE:-deployment/worker.env}"
+    volumes:
+      - rsi-data:/data
+      - ./deployment/models.json:/config/models.json:ro
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 130s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+volumes:
+  rsi-data:

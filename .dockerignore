@@ -1,0 +1,5 @@
+**
+!rsi_library/
+!rsi_library/**
+**/__pycache__/
+**/*.pyc

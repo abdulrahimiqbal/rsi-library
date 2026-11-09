@@ -1,0 +1,26 @@
+{
+  "artifact": {
+    "type": "prompt",
+    "text": "Classify a support ticket as billing if it contains invoice, refund, charge, or billing. Otherwise classify it as account. Return only billing or account."
+  },
+  "task": {
+    "train": [
+      {"input": "When will the refund you approved reach my card?", "expected": "billing"},
+      {"input": "My bank shows two identical debits for the same subscription.", "expected": "billing"},
+      {"input": "I need a receipt for the payment I made last week.", "expected": "billing"},
+      {"input": "The invoice looks right. I am locked out after losing my phone.", "expected": "account"},
+      {"input": "The account owner left our company. How do I appoint a new administrator?", "expected": "account"},
+      {"input": "Why does the password reset email go to an address I no longer use?", "expected": "account"}
+    ],
+    "holdout": [
+      {"input": "The payment was reversed, but the money never came back to my card.", "expected": "billing"},
+      {"input": "Can you show the tax separately on my March statement?", "expected": "billing"},
+      {"input": "My trial ended a day early and the subscription fee already came out of my bank account.", "expected": "billing"},
+      {"input": "I canceled before renewal and a new debit appeared yesterday.", "expected": "billing"},
+      {"input": "I received the invoice, but the link that signs me in says my email is unknown.", "expected": "account"},
+      {"input": "Every time I enter my security code, it takes me back to the first screen.", "expected": "account"},
+      {"input": "How can I update the password for the billing portal?", "expected": "account"},
+      {"input": "The receipt is fine. Can I give another team member access to the dashboard?", "expected": "account"}
+    ]
+  }
+}

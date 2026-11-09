@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>RSI Library · Loop Workbench</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%23162018%22%2F%3E%3Cpath%20d%3D%22M8%2014a8%208%200%200%201%2013-5l3%203M24%2018a8%208%200%200%201-13%205l-3-3M24%207v5h-5M8%2025v-5h5%22%20fill%3D%22none%22%20stroke%3D%22%23d9ee91%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%221.6%22%20fill%3D%22%23d9ee91%22%2F%3E%3C%2Fsvg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#studio">Skip to workbench</a>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top" aria-label="RSI Library home">
+        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+          <path d="M6 12a8 8 0 0 1 13-5l3 3M22 16a8 8 0 0 1-13 5l-3-3M22 5v5h-5M6 23v-5h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="14" cy="14" r="1.7" fill="currentColor"/>
+        </svg>
+        <span>RSI <strong>Library</strong></span>
+      </a>
+      <nav aria-label="Workbench sections">
+        <a href="#library">Templates</a>
+        <a href="#studio">Workbench</a>
+        <a href="#results">Results</a>
+      </nav>
+      <div class="status-tag"><span aria-hidden="true"></span>Local workbench</div>
+    </div>
+  </header>
+
+  <main id="top" class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow"><span>Experiment studio</span><i></i> Recursive self-improvement</p>
+        <h1 id="hero-title">Build a better loop<span>.</span></h1>
+        <p>Fork a template, swap a component, and see what improves on your task.</p>
+      </div>
+      <aside class="hero-note" aria-label="Run model">
+        <svg viewBox="0 0 56 38" width="56" height="38" aria-hidden="true">
+          <path d="M2 32h52M2 22h52M2 12h52" stroke="currentColor" stroke-opacity=".2" stroke-dasharray="2 3"/>
+          <path d="M2 30h10v-6h11v-7h10v2h10V7h11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="54" cy="7" r="2" fill="currentColor"/>
+        </svg>
+        <span>Five swappable nodes<br>One measured feedback loop</span>
+      </aside>
+    </section>
+
+    <section id="library" aria-labelledby="library-title">
+      <div class="section-heading">
+        <div><span class="eyebrow index">01</span><h2 id="library-title">Template library</h2></div>
+        <span class="eyebrow quiet" id="template-count">Loading templates</span>
+      </div>
+      <div class="template-grid" id="template-list" aria-label="Available templates"></div>
+      <noscript><p class="template-error">Enable JavaScript to use the local workbench.</p></noscript>
+    </section>
+
+    <div class="workspace">
+      <section id="studio" aria-labelledby="studio-title">
+        <div class="section-heading">
+          <div><span class="eyebrow index">02</span><h2 id="studio-title">Loop workbench</h2></div>
+          <span class="eyebrow quiet" id="template-origin">Draft</span>
+        </div>
+        <form id="experiment" class="panel" aria-label="Loop configuration">
+          <fieldset id="experiment-controls" disabled>
+            <div class="run-settings">
+              <label>Run name<input id="run-name" type="text" maxlength="100" autocomplete="off" required></label>
+              <label>Evaluations<input id="budget" type="number" min="1" max="100" step="1" required></label>
+              <label>Seed<input id="seed" type="number" min="0" max="4294967295" step="1" required></label>
+            </div>
+
+            <div class="diagram">
+              <div class="diagram-caption"><span>Loop map</span><span>Editable components</span></div>
+              <div class="node-grid">
+                <div class="node node-target" data-kind="target">
+                  <label for="target"><span>01</span> Target</label>
+                  <select id="target" aria-describedby="node-hint"></select>
+                </div>
+                <span class="flow" aria-hidden="true">→</span>
+                <div class="node node-proposer" data-kind="proposer">
+                  <label for="proposer"><span>02</span> Proposer</label>
+                  <select id="proposer" aria-describedby="node-hint"></select>
+                </div>
+                <span class="flow" aria-hidden="true">→</span>
+                <div class="node node-judge" data-kind="judge">
+                  <label for="judge"><span>03</span> Judge</label>
+                  <select id="judge" aria-describedby="node-hint"></select>
+                </div>
+                <div class="feedback">
+                  <span class="feedback-return" aria-hidden="true">↰</span>
+                  <span class="feedback-label">Next parent</span>
+                  <span class="feedback-source" aria-hidden="true">↓</span>
+                </div>
+                <div class="node node-search" data-kind="search">
+                  <label for="search"><span>04</span> Search</label>
+                  <select id="search" aria-describedby="node-hint"></select>
+                </div>
+                <div class="node node-harness" data-kind="harness">
+                  <label for="harness"><span>05</span> Harness</label>
+                  <select id="harness" aria-describedby="node-hint"></select>
+                </div>
+              </div>
+              <p class="node-hint" id="node-hint">Select any component to see its role.</p>
+            </div>
+
+            <details class="drawer" id="task-drawer">
+              <summary><span>Task data</span><span id="task-counts">Built-in task</span></summary>
+              <p>Train examples guide the search. Holdout examples score only the final winner.</p>
+              <label class="stack-label" for="task-data">Task JSON</label>
+              <textarea id="task-data" rows="7" spellcheck="false" autocomplete="off"></textarea>
+              <div class="drawer-actions">
+                <button class="subtle" id="import-task" type="button">Import task</button>
+                <button class="subtle" id="reset-task" type="button">Use example task</button>
+                <input type="file" id="task-file" accept=".json,application/json" hidden>
+              </div>
+            </details>
+
+            <details class="drawer" id="advanced-drawer">
+              <summary><span>Advanced configuration</span><span>Optional</span></summary>
+              <p>Leave a field blank to use the defaults. Settings are keyed by component, such as <code>proposer</code>.</p>
+              <label class="stack-label" for="initial-candidate">Starting candidate JSON</label>
+              <textarea id="initial-candidate" rows="3" spellcheck="false" autocomplete="off"></textarea>
+              <label class="stack-label" for="component-settings">Component settings JSON</label>
+              <textarea id="component-settings" rows="3" spellcheck="false" autocomplete="off"></textarea>
+            </details>
+
+            <div class="run-actions">
+              <div class="primary-actions">
+                <button class="primary" id="run-button" type="submit"><span aria-hidden="true">▶</span> Run loop</button>
+                <button id="compare-button" type="button" hidden>Compare runs</button>
+                <button id="pin-button" type="button">Pin as control</button>
+              </div>
+              <div id="pin-summary" class="pin-summary" hidden><span id="pin-name"></span><button class="subtle" id="clear-pin" type="button">Clear</button></div>
+              <p class="form-note">The budget includes the starting candidate. To compare, change the proposer or search and keep the evaluation setup fixed.</p>
+            </div>
+            <div class="config-actions">
+              <button class="subtle" id="import-config" type="button">Import configuration</button>
+              <button class="subtle" id="export-config" type="button">Export configuration <span aria-hidden="true">↗</span></button>
+              <input type="file" id="config-file" accept=".json,application/json" hidden>
+            </div>
+          </fieldset>
+          <p class="form-message" id="form-message" role="status"></p>
+        </form>
+      </section>
+
+      <section id="results" aria-labelledby="results-title">
+        <div class="section-heading">
+          <div><span class="eyebrow index">03</span><h2 id="results-title">Run results</h2></div>
+          <button class="subtle" id="export-results" type="button" hidden>Export results <span aria-hidden="true">↗</span></button>
+        </div>
+        <div class="panel results-panel" id="result-panel" aria-busy="false">
+          <div id="results-content">
+            <div class="empty-state">
+              <div class="empty-icon">
+                <svg viewBox="0 0 42 42" width="42" height="42" aria-hidden="true">
+                  <path d="M6 6v30h30M10 28l7-7 6 3 10-12M28 12h5v5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <h3>Waiting for a run</h3>
+              <p>Run a loop to see how candidate scores change, then inspect the winning candidate and its history.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer class="shell footer"><span>RSI Library</span><span>Define → propose → judge → search → repeat</span></footer>
+</body>
+</html>
