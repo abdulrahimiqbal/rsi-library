@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Improve a prompt with an optimizer and keep the change only when a paired holdout test shows a significant gain.">
   <title>RSI Library | Gateway Workbench</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b281e'/%3E%3Cpath d='M23 11a8 8 0 1 0 1 9M23 7v5h-5' fill='none' stroke='%23d9ee91' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
@@ -19,8 +20,10 @@
         <span>RSI <strong>Library</strong></span>
       </a>
       <nav aria-label="Workbench">
+        <a href="#how">How it works</a>
         <a href="#new-job">New job</a>
         <a href="#workspace-jobs">Job history</a>
+        <a href="#request-key" id="nav-request">Request a key</a>
       </nav>
       <div class="session">
         <span id="connection-status" class="connection-status">Disconnected</span>
@@ -33,8 +36,8 @@
     <div class="hero">
       <div>
         <p class="eyebrow">RSI Library <span aria-hidden="true">/</span> Gateway</p>
-        <h1>Improve an artifact<span>.</span></h1>
-        <p>Set a budget, choose an optimizer, and check the result against your holdout tests.</p>
+        <h1>Improve a prompt<span>.</span></h1>
+        <p>Let an optimizer revise your prompt using training cases. Keep the revision only if it beats the original on held-out cases by more than chance.</p>
       </div>
       <form id="connect-form" class="connect-form" autocomplete="off">
         <label for="api-key">Workspace API key</label>
@@ -42,7 +45,7 @@
           <input id="api-key" type="password" placeholder="Paste your API key" required spellcheck="false" autocapitalize="none" autocomplete="off">
           <button id="connect" type="submit" class="primary">Connect</button>
         </div>
-        <p class="hint">Your key stays in this tab until you disconnect or reload.</p>
+        <p class="hint">Your key stays in this tab until you disconnect or reload. <a href="#request-key" id="hero-request">No key? Request one.</a></p>
       </form>
       <div class="workspace-tag" id="workspace-tag" hidden>
         <span class="eyebrow">Connected workspace</span>
@@ -50,7 +53,30 @@
         <span id="workspace-role" class="hint"></span>
       </div>
     </div>
+    <p id="mode-banner" class="notice banner" hidden>Demo mode: jobs run on a simulated model, so they cost nothing and show how the workflow behaves rather than real model quality.</p>
     <p id="session-message" class="notice" role="status"></p>
+
+    <section id="how" class="explainer" aria-labelledby="how-title">
+      <div class="section-heading">
+        <p class="eyebrow">How it works</p>
+        <h2 id="how-title">Three steps and one rule</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <strong>Bring a task</strong>
+          <span>A prompt or a two-to-four-step prompt chain, training cases, and at least <span data-policy="min_holdout_cases">8</span> holdout cases with the answers you expect.</span>
+        </li>
+        <li>
+          <strong>Optimize on training cases only</strong>
+          <span>Pick reflective search, archive evolution, or a self-revising improver, or let the gateway choose. Optimizers never see your holdout cases.</span>
+        </li>
+        <li>
+          <strong>Verify on holdout</strong>
+          <span>The gateway runs the original and the best revision on the same holdout cases and tests the paired difference. The revision replaces your prompt only if the gain is significant at the 5% level.</span>
+        </li>
+      </ol>
+      <p class="hint">Every job runs within your call, spend, and time limits, and every model call is recorded against them. A gain on a small holdout set may not reach significance; add cases or score each case several times to measure smaller gains.</p>
+    </section>
 
     <div class="workbench">
       <section id="new-job" class="panel composer" aria-labelledby="new-title">
@@ -89,6 +115,14 @@
                   <option value="zero-retention">Require zero retention</option>
                 </select>
               </label>
+              <label>Holdout tries per case
+                <select id="holdout-repeats">
+                  <option value="1">1 try</option>
+                  <option value="2">2 tries</option>
+                  <option value="3">3 tries</option>
+                  <option value="5">5 tries</option>
+                </select>
+              </label>
             </div>
             <p id="method-description" class="hint"></p>
             <label id="prompt-field">Starting prompt
@@ -107,7 +141,7 @@
                 <span class="hint" id="fixture-counts"></span>
               </summary>
               <div class="fixture-inner">
-                <p class="hint">Optimizers see training examples. The final check uses the separate holdout set.</p>
+                <p class="hint">Optimizers see training examples. The final check uses the separate holdout set, which needs at least <span data-policy="min_holdout_cases">8</span> cases.</p>
                 <div class="form-grid">
                   <label>Training cases <span class="hint">(JSON)</span>
                     <textarea id="train" rows="7" maxlength="50000" spellcheck="false"></textarea>
@@ -126,7 +160,7 @@
                   <input id="max-trials" type="number" inputmode="numeric" min="1" max="50" step="1" value="3" required>
                 </label>
                 <label>Model calls
-                  <input id="max-calls" type="number" inputmode="numeric" min="1" max="1000" step="1" value="40" required>
+                  <input id="max-calls" type="number" inputmode="numeric" min="1" max="1000" step="1" value="60" required>
                 </label>
                 <label>Spend cap (USD)
                   <input id="max-cost" type="text" inputmode="decimal" value="0.25" required>
@@ -182,6 +216,10 @@
                 <summary id="artifact-title">Returned artifact</summary>
                 <pre id="artifact"></pre>
               </details>
+              <details id="candidate-output" class="output" hidden>
+                <summary>Proposed candidate, not adopted</summary>
+                <pre id="candidate"></pre>
+              </details>
               <details id="trials" class="output" hidden>
                 <summary>Trials</summary>
                 <pre id="trial-data"></pre>
@@ -201,11 +239,63 @@
         </section>
       </div>
     </div>
+
+    <section id="operator" class="panel operator" aria-labelledby="operator-title" hidden>
+      <div class="section-heading section-row">
+        <div>
+          <p class="eyebrow">Operator</p>
+          <h2 id="operator-title">Access requests</h2>
+        </div>
+        <button id="refresh-requests" type="button" class="quiet">Refresh</button>
+      </div>
+      <p id="site-usage" class="hint"></p>
+      <p id="requests-empty" class="empty">No pending requests.</p>
+      <ul id="requests" class="request-list" aria-label="Pending access requests"></ul>
+      <div id="issued" class="issued" hidden>
+        <p class="eyebrow">New key, shown once</p>
+        <p id="issued-for" class="hint"></p>
+        <div class="connect-row">
+          <input id="issued-token" type="text" readonly spellcheck="false" aria-label="New workspace key">
+          <button id="copy-token" type="button">Copy</button>
+        </div>
+        <p class="hint">Send it to the requester directly. It can’t be shown again; revoke it and approve a new request if it is lost.</p>
+      </div>
+      <p id="operator-message" class="notice" role="status"></p>
+    </section>
+
+    <section id="request-key" class="panel request" aria-labelledby="request-title">
+      <div class="section-heading">
+        <p class="eyebrow">Get access</p>
+        <h2 id="request-title">Request a workspace key</h2>
+      </div>
+      <p id="requests-closed" class="empty" hidden>Access requests are closed right now.</p>
+      <form id="access-form" autocomplete="on">
+        <div class="form-grid">
+          <label>Email
+            <input id="access-email" type="email" required maxlength="254" autocomplete="email">
+          </label>
+          <label>Name <span class="hint">(optional)</span>
+            <input id="access-name" type="text" maxlength="120" autocomplete="name">
+          </label>
+        </div>
+        <label>What would you like to improve?
+          <textarea id="access-use" rows="3" minlength="10" maxlength="2000" required></textarea>
+        </label>
+        <label class="trap" aria-hidden="true">Website
+          <input id="access-website" type="text" tabindex="-1" autocomplete="off">
+        </label>
+        <div class="actions">
+          <button id="access-submit" class="primary" type="submit">Request a key</button>
+          <span class="hint">We use your email only to reply about access.</span>
+        </div>
+        <p id="access-message" class="notice" role="status"></p>
+      </form>
+    </section>
   </main>
 
   <footer class="shell footer">
     <span>RSI Library Gateway</span>
-    <span>Persistent jobs <span aria-hidden="true">·</span> Holdout evidence <span aria-hidden="true">·</span> Metered execution</span>
+    <span>Persistent jobs <span aria-hidden="true">·</span> Holdout evidence <span aria-hidden="true">·</span> Metered execution <span aria-hidden="true">·</span> <a href="https://github.com/abdulrahimiqbal/rsi-library" rel="noopener">Source</a></span>
   </footer>
 </body>
 </html>

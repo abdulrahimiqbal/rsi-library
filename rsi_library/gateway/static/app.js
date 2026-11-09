@@ -14,6 +14,7 @@ const stageLabels = {
   baseline_holdout: "Checking the original on holdout",
   candidate_holdout: "Checking the candidate on holdout",
 };
+const verdictLabels = {improved: "significant gain", inconclusive: "inconclusive", not_improved: "no gain"};
 const sample = {
   prompt: "Classify the incoming support message. Return exactly one label.",
   steps: [
@@ -22,19 +23,28 @@ const sample = {
   ],
   train: [
     {input: "I was charged twice for my subscription.", expected: "billing"},
-    {input: "The link to reset my password expired.", expected: "account"},
     {input: "Where can I download last month’s invoice?", expected: "billing"},
+    {input: "My refund still hasn’t arrived.", expected: "billing"},
+    {input: "The link to reset my password expired.", expected: "account"},
     {input: "I can’t edit the email address in my profile.", expected: "account"},
+    {input: "Two-factor codes never reach my phone.", expected: "account"},
   ],
   holdout: [
     {input: "How can I check the status of my refund?", expected: "billing"},
+    {input: "Please send a corrected invoice with our tax ID.", expected: "billing"},
+    {input: "Why is there an extra charge on my card?", expected: "billing"},
+    {input: "Can billing switch us to annual payments?", expected: "billing"},
+    {input: "The invoice total doesn’t match the quote.", expected: "billing"},
     {input: "The dashboard keeps looping back to login.", expected: "account"},
+    {input: "How do I add a teammate to our workspace?", expected: "account"},
+    {input: "My new password isn’t accepted.", expected: "account"},
   ],
 };
+let policy = {min_holdout_cases: 8, max_holdout_repeats: 5, alpha: 0.05};
 const state = {
   session: null, connecting: false, jobs: [], selectedId: null, selected: null, selectedFull: false,
   listSignature: "", selectRevision: 0, submitting: false, cancelling: false,
-  pending: new Map(),
+  pending: new Map(), requests: [], operatorBusy: false, requesting: false,
 };
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 6,
@@ -68,6 +78,15 @@ function dollars(microdollars) {
 
 function score(value) {
   return Number.isFinite(value) ? percent.format(value) : "—";
+}
+
+function pValue(value) {
+  if (!Number.isFinite(value)) return "—";
+  return value < 0.001 ? "< 0.001" : value.toFixed(3);
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function timestamp(value) {
@@ -112,6 +131,16 @@ function setOptions(select, options, previous) {
     return option;
   }));
   if (options.some(({id}) => id === previous)) select.value = previous;
+}
+
+function applyPolicy(value) {
+  if (!value || typeof value !== "object") return;
+  policy = {...policy, ...value};
+  for (const target of document.querySelectorAll("[data-policy]")) {
+    const entry = policy[target.dataset.policy];
+    if (entry !== undefined) target.textContent = String(entry);
+  }
+  updateFixtureSummary();
 }
 
 function syncArtifact() {
@@ -163,12 +192,16 @@ function updateFixtureSummary() {
   try {
     const train = parseList("train", "Training cases").length;
     const holdout = parseList("holdout", "Holdout cases").length;
-    el("fixture-counts").textContent = `${train} train · ${holdout} holdout`;
+    const repeats = Number(el("holdout-repeats").value) || 1;
+    const short = holdout < policy.min_holdout_cases;
+    el("fixture-counts").textContent = `${train} train · ${holdout} holdout${short ? ` · needs ${policy.min_holdout_cases}+` : ""}`;
+    el("fixture-counts").classList.toggle("warning", short);
     const steps = el("artifact-type").value === "prompt-chain" ? parseList("chain-steps", "Starting steps").length : 1;
-    const minimumCalls = 2 * (train + holdout) * steps + 1;
-    minimum = `Allow at least ${minimumCalls} model calls for one trial and a holdout comparison.`;
+    const minimumCalls = 2 * train * steps + 1 + 2 * holdout * steps * repeats;
+    minimum = `Allow at least ${minimumCalls} model calls for one trial and the holdout check.`;
   } catch {
     el("fixture-counts").textContent = "Check fixture JSON";
+    el("fixture-counts").classList.remove("warning");
   }
   if (Number.isFinite(model?.max_call_cost_microusd)) {
     minimum += ` Up to ${dollars(model.max_call_cost_microusd)} can be reserved per call.`;
@@ -198,6 +231,8 @@ function syncAccess() {
   el("refresh-jobs").disabled = !current;
   el("connection-status").textContent = current ? "Connected" : "Disconnected";
   el("connection-status").classList.toggle("connected", Boolean(current));
+  el("operator").hidden = !(current?.catalog.operator && canWrite);
+  el("request-key").hidden = Boolean(current);
   el("job-fields").disabled = !canWrite || !hasModels || state.submitting;
   el("submit-job").disabled = !canWrite || !hasModels || !supported || state.submitting;
   if (state.submitting) el("submit-hint").textContent = "Submitting your job…";
@@ -218,9 +253,14 @@ function disconnect(message = "", error = false) {
   state.submitting = false;
   state.cancelling = false;
   state.pending.clear();
+  state.requests = [];
   el("api-key").value = "";
   el("job-form").reset();
   el("model").replaceChildren(node("option", "", "Connect to load models"));
+  el("issued").hidden = true;
+  el("issued-token").value = "";
+  el("requests").replaceChildren();
+  el("site-usage").textContent = "";
   restoreExample();
   syncArtifact();
   syncAccess();
@@ -228,6 +268,7 @@ function disconnect(message = "", error = false) {
   renderDetail();
   notice("job-message");
   notice("detail-message");
+  notice("operator-message");
   notice("session-message", message, error);
 }
 
@@ -261,12 +302,13 @@ async function connect(event) {
     }
     const current = {key, catalog, listing: false, reading: false, lastList: 0};
     state.session = current;
+    applyPolicy(catalog.evidence_policy);
     setOptions(el("model"), [{id: "", name: catalog.models.length ? "Auto select model" : "No models configured"}, ...catalog.models]);
     syncArtifact();
     syncAccess();
     notice("session-message", "Connected to your workspace.");
     el(catalog.role === "write" && catalog.models.length ? "artifact-type" : "refresh-jobs").focus();
-    await loadList(current);
+    await Promise.all([loadList(current), loadOperator(current)]);
   } catch (error) {
     notice("session-message", error.message, true);
   } finally {
@@ -283,10 +325,15 @@ function chip(status) {
   return value;
 }
 
+function verdictOf(job) {
+  // Job lists carry a summary verdict; a fully loaded job carries its evidence.
+  return job.result?.verdict || job.result?.evidence?.verdict;
+}
+
 function renderList() {
   const signature = JSON.stringify([
     state.session?.catalog.workspace_id, state.selectedId,
-    state.jobs.map((job) => [job.id, job.state, job.created_at, job.result?.method, job.request?._routing?.method, job.request?.method]),
+    state.jobs.map((job) => [job.id, job.state, job.created_at, job.result?.method, verdictOf(job), job.request?._routing?.method, job.request?.method]),
   ]);
   if (signature === state.listSignature) return;
   state.listSignature = signature;
@@ -299,10 +346,11 @@ function renderList() {
     button.setAttribute("aria-current", job.id === state.selectedId ? "true" : "false");
     const method = job.result?.method || job.request?._routing?.method || job.request?.method;
     const label = method === "auto" ? "Auto route" : method || "Improvement job";
+    const verdict = verdictLabels[verdictOf(job)];
     button.append(
       node("span", "job-title", label),
       chip(job.state),
-      node("span", "time", timestamp(job.created_at)),
+      node("span", "time", [timestamp(job.created_at), verdict].filter(Boolean).join(" · ")),
     );
     button.addEventListener("click", () => selectJob(job));
     row.append(button);
@@ -320,12 +368,31 @@ function metric(label, value, theme = "") {
   return item;
 }
 
+function decisionText(result) {
+  const evidence = result.evidence;
+  if (!evidence) {
+    return result.accepted
+      ? "The candidate scored higher on holdout and is ready to review."
+      : "The original artifact was kept after the holdout check.";
+  }
+  const moved = `fixed ${plural(evidence.improved_cases, "holdout case")} and broke ${evidence.regressed_cases}`;
+  const test = `p = ${pValue(evidence.p_value)}`;
+  if (evidence.verdict === "improved") {
+    return `The candidate ${moved} (${test}). The gain is statistically significant, so the candidate is ready to review.`;
+  }
+  if (evidence.verdict === "inconclusive") {
+    return `The candidate scored higher but only ${moved} (${test}), which could be chance. The original was kept; the candidate is below if you want to test it on more cases.`;
+  }
+  if (evidence.note) return `${evidence.note} The original was kept.`;
+  return `The candidate did not beat the original on holdout: it ${moved}. The original was kept.`;
+}
+
 function renderDetail() {
   const job = state.selected;
   el("detail-content").hidden = !job;
   el("detail-empty").hidden = Boolean(job);
   if (!job) {
-    for (const id of ["job-id", "job-method", "run-error", "run-progress", "decision", "holdout-size", "artifact", "trial-data", "routing-data"]) {
+    for (const id of ["job-id", "job-method", "run-error", "run-progress", "decision", "holdout-size", "artifact", "candidate", "trial-data", "routing-data"]) {
       el(id).textContent = "";
     }
     el("usage").replaceChildren();
@@ -362,25 +429,40 @@ function renderDetail() {
   el("download-run").hidden = !state.selectedFull;
   if (!result) {
     el("artifact").textContent = "";
+    el("candidate").textContent = "";
     el("trial-data").textContent = "";
     el("routing-data").textContent = "";
     return;
   }
-  el("decision").textContent = result.accepted
-    ? "The candidate scored higher on holdout and is ready to review."
-    : "The original artifact was kept after the holdout check.";
+  const evidence = result.evidence;
+  el("decision").textContent = decisionText(result);
   el("decision").classList.toggle("accepted", result.accepted === true);
-  el("scores").replaceChildren(
+  el("decision").classList.toggle("inconclusive", evidence?.verdict === "inconclusive");
+  const scores = [
     metric("Original holdout", score(result.baseline_holdout)),
     metric("Candidate holdout", score(result.candidate_holdout), result.accepted ? "positive" : ""),
-  );
+  ];
+  if (evidence) {
+    scores.push(
+      metric("Cases fixed / broken", `${evidence.improved_cases} / ${evidence.regressed_cases}`),
+      metric("Paired test", `p = ${pValue(evidence.p_value)}`, result.accepted ? "positive" : ""),
+    );
+  }
+  el("scores").replaceChildren(...scores);
   const count = result.holdout_cases;
   el("holdout-size").hidden = !Number.isInteger(count);
-  el("holdout-size").textContent = Number.isInteger(count) ? `Scored on ${count} holdout ${count === 1 ? "case" : "cases"}.` : "";
+  const repeats = evidence?.repeats || result.holdout_repeats || 1;
+  el("holdout-size").textContent = !Number.isInteger(count) ? "" : [
+    `Scored on ${plural(count, "holdout case")}${repeats > 1 ? `, ${repeats} tries each` : ""}.`,
+    evidence ? `A significant gain needs p ≤ ${evidence.alpha} on a one-sided sign test of the paired cases.` : "",
+  ].filter(Boolean).join(" ");
   el("artifact-title").textContent = result.accepted ? "Improved artifact" : "Original artifact";
   el("artifact-output").hidden = result.artifact == null;
-  el("artifact").textContent = result.artifact?.type === "prompt" && !result.artifact?.improver
-    ? result.artifact.text : (result.artifact == null ? "" : json(result.artifact));
+  const display = (artifact) => artifact?.type === "prompt" && !artifact?.improver ? artifact.text : json(artifact);
+  el("artifact").textContent = result.artifact == null ? "" : display(result.artifact);
+  const unadopted = !result.accepted && result.candidate != null && json(result.candidate) !== json(result.artifact);
+  el("candidate-output").hidden = !unadopted;
+  el("candidate").textContent = unadopted ? display(result.candidate) : "";
   el("trials").hidden = !result.trials?.length;
   el("trial-data").textContent = result.trials?.length ? json(result.trials) : "";
   el("routing").hidden = result.routing == null;
@@ -448,7 +530,7 @@ function microusd(raw) {
   const match = /^(\d{1,9})(?:\.(\d{1,6}))?$/.exec(raw.trim());
   if (!match) throw new Error("Enter a dollar amount with up to six decimal places, such as 0.25.");
   const amount = Number(match[1]) * 1_000_000 + Number((match[2] || "").padEnd(6, "0"));
-  if (amount > 1_000_000_000) throw new Error("Set the spend cap to $1,000 or less.");
+  if (amount > 1_000_000_000) throw new Error("Set the amount to $1,000 or less.");
   return amount;
 }
 
@@ -471,12 +553,17 @@ function jobRequest() {
     const improver = el("improver-text").value;
     if (method === "self-revise-v1" && improver.trim()) artifact.improver = improver;
   }
+  const holdout = fixtures("holdout", "Holdout cases");
+  if (holdout.length < policy.min_holdout_cases) {
+    throw new Error(`Add at least ${policy.min_holdout_cases} holdout cases. Fewer can't show a statistically significant gain.`);
+  }
   const model = el("model").value;
   return {
     method, artifact, ...(model ? {model} : {}),
     objective: el("objective").value,
     data_policy: el("data-policy").value,
-    task: {train: fixtures("train", "Training cases"), holdout: fixtures("holdout", "Holdout cases")},
+    holdout_repeats: Number(el("holdout-repeats").value) || 1,
+    task: {train: fixtures("train", "Training cases"), holdout},
     budget: {
       max_calls: el("max-calls").valueAsNumber,
       max_cost_microusd: microusd(el("max-cost").value),
@@ -564,6 +651,168 @@ function download(suffix, value) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Operator: review access requests and watch site-wide spend.
+
+function renderSiteUsage(usage) {
+  const parts = [`Site model spend: ${dollars(usage.spent_microusd)} settled`];
+  if (usage.reserved_microusd) parts.push(`${dollars(usage.reserved_microusd)} in progress`);
+  if (usage.uncertain_microusd) parts.push(`${dollars(usage.uncertain_microusd)} uncertain`);
+  const limit = usage.site_spend_limit_microusd;
+  const cap = Number.isFinite(limit) ? ` of a ${dollars(limit)} site-wide cap` : ", with no site-wide cap set";
+  el("site-usage").textContent = `${parts.join(", ")}${cap}, across ${plural(usage.calls, "model call")}.`;
+}
+
+function renderRequests() {
+  const rows = state.requests.map((request) => {
+    const item = node("li", "request-row");
+    const head = node("div", "request-head");
+    head.append(node("strong", "", request.email), node("span", "hint", `${request.name} · ${timestamp(request.created_at)}`));
+    const actions = node("div", "request-actions");
+    const label = node("label", "", "Allowance (USD)");
+    const input = node("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.value = "1.00";
+    label.append(input);
+    const approve = node("button", "primary", "Approve");
+    approve.type = "button";
+    approve.addEventListener("click", () => decide(request, "approve", input.value));
+    const decline = node("button", "quiet danger", "Decline");
+    decline.type = "button";
+    decline.addEventListener("click", () => decide(request, "decline"));
+    actions.append(label, approve, decline);
+    item.append(head, node("p", "request-use", request.use_case), actions);
+    return item;
+  });
+  el("requests").replaceChildren(...rows);
+  el("requests-empty").hidden = rows.length > 0;
+}
+
+async function loadOperator(current, notify = false) {
+  if (!current?.catalog.operator || current.catalog.role !== "write") return;
+  try {
+    const [requests, usage] = await Promise.all([
+      api(current.key, "/operator/access-requests"),
+      api(current.key, "/operator/usage"),
+    ]);
+    if (state.session !== current) return;
+    state.requests = Array.isArray(requests.requests) ? requests.requests : [];
+    renderRequests();
+    renderSiteUsage(usage.usage);
+    if (notify) notice("operator-message", "Requests refreshed.");
+  } catch (error) {
+    handleFailure(current, "operator-message", error);
+  }
+}
+
+async function decide(request, action, allowance) {
+  const current = state.session;
+  if (!current || state.operatorBusy) return;
+  let body = {};
+  if (action === "approve") {
+    try {
+      body = {spend_limit_microusd: microusd(allowance)};
+    } catch (error) {
+      notice("operator-message", error.message, true);
+      return;
+    }
+  }
+  state.operatorBusy = true;
+  notice("operator-message", `${action === "approve" ? "Approving" : "Declining"} ${request.email}…`);
+  try {
+    const result = await api(current.key, `/operator/access-requests/${encodeURIComponent(request.id)}/${action}`, {method: "POST", body});
+    if (state.session !== current) return;
+    if (action === "approve") {
+      el("issued").hidden = false;
+      el("issued-for").textContent = `For ${request.email}, with a ${dollars(result.spend_limit_microusd)} allowance in workspace ${result.workspace_id}.`;
+      el("issued-token").value = result.key.token;
+      el("issued-token").focus();
+      el("issued-token").select();
+    }
+    notice("operator-message", `${action === "approve" ? "Approved" : "Declined"} ${request.email}.`);
+    await loadOperator(current);
+  } catch (error) {
+    handleFailure(current, "operator-message", error);
+  } finally {
+    state.operatorBusy = false;
+  }
+}
+
+async function copyToken() {
+  const value = el("issued-token").value;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    notice("operator-message", "Key copied.");
+  } catch {
+    el("issued-token").select();
+    notice("operator-message", "Select the key and copy it.");
+  }
+}
+
+// Public: describe the gateway and accept requests for keys.
+
+async function loadInfo() {
+  try {
+    const response = await fetch("/public/info", {cache: "no-store", credentials: "omit", redirect: "error"});
+    if (!response.ok) return;
+    const info = await response.json();
+    el("mode-banner").hidden = info.mode !== "demo";
+    const open = info.access_requests === true;
+    el("access-form").hidden = !open;
+    el("requests-closed").hidden = open;
+    el("nav-request").hidden = !open;
+    el("hero-request").hidden = !open;
+    applyPolicy(info.evidence_policy);
+  } catch {
+    // The workbench works without this description.
+  }
+}
+
+async function requestAccess(event) {
+  event.preventDefault();
+  if (state.requesting) return;
+  const email = el("access-email").value.trim();
+  const body = {email, use_case: el("access-use").value.trim()};
+  const name = el("access-name").value.trim();
+  if (name) body.name = name;
+  if (el("access-website").value) body.website = el("access-website").value;
+  if (body.use_case.length < 10) {
+    notice("access-message", "Tell us a little more about what you want to improve.", true);
+    return;
+  }
+  state.requesting = true;
+  el("access-submit").disabled = true;
+  notice("access-message", "Sending your request…");
+  try {
+    const response = await fetch("/access-requests", {
+      method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+      body: JSON.stringify(body), cache: "no-store", credentials: "omit", redirect: "error",
+    });
+    let data = {};
+    try {
+      data = await response.json();
+    } catch {
+      // Status alone is enough below.
+    }
+    if (response.status === 202) {
+      el("access-form").reset();
+      notice("access-message", `Thanks. We’ll reply to ${email} about access.`);
+    } else if (response.status === 429) {
+      notice("access-message", "Too many requests from this network. Please try again later.", true);
+    } else if (response.status === 404) {
+      notice("access-message", "Access requests are closed right now.", true);
+    } else {
+      notice("access-message", typeof data.error === "string" ? data.error : "The request could not be sent.", true);
+    }
+  } catch {
+    notice("access-message", "Could not reach the gateway. Please try again.", true);
+  } finally {
+    state.requesting = false;
+    el("access-submit").disabled = false;
+  }
+}
+
 el("connect-form").addEventListener("submit", connect);
 el("disconnect").addEventListener("click", () => {
   disconnect("Disconnected from your workspace.");
@@ -575,6 +824,7 @@ el("artifact-type").addEventListener("change", () => {
 });
 el("method").addEventListener("change", syncMethod);
 el("model").addEventListener("change", updateFixtureSummary);
+el("holdout-repeats").addEventListener("change", updateFixtureSummary);
 for (const id of ["train", "holdout", "chain-steps"]) el(id).addEventListener("input", updateFixtureSummary);
 el("load-example").addEventListener("click", restoreExample);
 el("job-form").addEventListener("submit", submit);
@@ -585,6 +835,9 @@ el("refresh-jobs").addEventListener("click", () => {
 el("cancel-job").addEventListener("click", cancel);
 el("download-artifact").addEventListener("click", () => download("artifact", state.selected?.result?.artifact));
 el("download-run").addEventListener("click", () => download("run", state.selected));
+el("refresh-requests").addEventListener("click", () => void loadOperator(state.session, true));
+el("copy-token").addEventListener("click", copyToken);
+el("access-form").addEventListener("submit", requestAccess);
 setInterval(() => {
   const current = state.session;
   if (!current || document.hidden) return;
@@ -595,3 +848,4 @@ setInterval(() => {
 restoreExample();
 syncArtifact();
 syncAccess();
+void loadInfo();
