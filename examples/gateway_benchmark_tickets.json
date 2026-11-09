@@ -17,10 +17,18 @@
       {"input": "Can you show the tax separately on my March statement?", "expected": "billing"},
       {"input": "My trial ended a day early and the subscription fee already came out of my bank account.", "expected": "billing"},
       {"input": "I canceled before renewal and a new debit appeared yesterday.", "expected": "billing"},
+      {"input": "The annual plan renewed even though I switched to monthly.", "expected": "billing"},
+      {"input": "Could you split the last payment across two cost centers?", "expected": "billing"},
+      {"input": "Why did the price go up on my latest statement?", "expected": "billing"},
+      {"input": "We were promised a discount for nonprofits but paid full price.", "expected": "billing"},
       {"input": "I received the invoice, but the link that signs me in says my email is unknown.", "expected": "account"},
       {"input": "Every time I enter my security code, it takes me back to the first screen.", "expected": "account"},
       {"input": "How can I update the password for the billing portal?", "expected": "account"},
-      {"input": "The receipt is fine. Can I give another team member access to the dashboard?", "expected": "account"}
+      {"input": "The receipt is fine. Can I give another team member access to the dashboard?", "expected": "account"},
+      {"input": "Our billing contact left; how do I remove her login?", "expected": "account"},
+      {"input": "I want two-factor codes sent to my new phone number.", "expected": "account"},
+      {"input": "Our admin role disappeared after the workspace was renamed.", "expected": "account"},
+      {"input": "The refund page will not load because my session keeps expiring.", "expected": "account"}
     ]
   }
 }

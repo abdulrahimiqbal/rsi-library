@@ -19,6 +19,7 @@ from uuid import uuid4
 
 METHODS = ("reflect-v1", "evolve-v1")
 TERMINAL = {"succeeded", "failed", "cancelled"}
+MIN_HOLDOUT, MAX_HOLDOUT = 8, 64
 DEMO = {
     "artifact": {"type": "prompt", "text": "Classify every ticket as account. Return only the label."},
     "task": {
@@ -28,10 +29,19 @@ DEMO = {
         ],
         "holdout": [
             {"input": "I need to check a refund.", "expected": "billing"},
+            {"input": "Please resend last month's invoice.", "expected": "billing"},
+            {"input": "Why is there a second charge on my card?", "expected": "billing"},
+            {"input": "Can billing add our tax number?", "expected": "billing"},
+            {"input": "The refund still has not arrived.", "expected": "billing"},
             {"input": "How can I change my profile photo?", "expected": "account"},
+            {"input": "I can't sign in after resetting my password.", "expected": "account"},
+            {"input": "Please update the email on my profile.", "expected": "account"},
         ],
     },
 }
+# The simulator always answers "account" for the original and labels every case correctly
+# for its fixed proposal, so 5 of 8 holdout cases improve: p = 1/32.
+SMOKE_RESULT = (0.375, 1.0)
 
 
 class BenchmarkError(RuntimeError):
@@ -141,10 +151,12 @@ def outcome(job: dict, seed: int, method: str) -> dict:
     result, usage = job.get("result") or {}, job["usage"]
     baseline = result.get("baseline_holdout")
     candidate = result.get("candidate_holdout")
+    evidence = result.get("evidence") or {}
     return {
         "id": job["id"], "seed": seed, "method": method, "state": job["state"],
         "baseline": baseline, "candidate": candidate, "accepted": result.get("accepted"),
         "gain_pp": 100 * (candidate - baseline) if candidate is not None and baseline is not None else None,
+        "verdict": evidence.get("verdict"), "p_value": evidence.get("p_value"),
         "calls": usage["calls"], "spent_microusd": usage["spent_microusd"],
         "uncertain_microusd": usage["uncertain_microusd"],
         "model_fingerprint": job.get("request", {}).get("_routing", {}).get("model_fingerprint"),
@@ -154,13 +166,32 @@ def outcome(job: dict, seed: int, method: str) -> dict:
 def print_row(row: dict) -> None:
     score = lambda value: f"{value:7.1%}" if value is not None else "      —"
     gain = f'{row["gain_pp"]:+7.1f}' if row["gain_pp"] is not None else "      —"
-    accepted = {True: "yes", False: "no", None: "—"}[row["accepted"]]
+    p_value = f'{row["p_value"]:7.4f}' if row["p_value"] is not None else "      —"
+    verdict = (row["verdict"] or "—").replace("_", " ")
     print(
         f'{row["seed"]:>10}  {row["method"]:<11}  {score(row["baseline"])}  {score(row["candidate"])}  {gain}  '
-        f'{accepted:>8}  {row["calls"]:>5}  {dollars(row["spent_microusd"]):>12}  '
+        f'{p_value}  {verdict:<13}  {row["calls"]:>5}  {dollars(row["spent_microusd"]):>12}  '
         f'{dollars(row["uncertain_microusd"]):>12}  {row["state"]}  {row["id"]}',
         flush=True,
     )
+
+
+def evidence_rows(rows: list[dict], seeds: list[int], *, benchmark: str, artifact_type: str, objective: str) -> list[dict]:
+    """Summarize each method as routing evidence: the gain users actually keep, per seed."""
+    entries = []
+    for method in METHODS:
+        runs = [row for row in rows if row["method"] == method]
+        if len(runs) != len(seeds) or len(runs) < 3:
+            raise BenchmarkError("Routing evidence needs one finished job per seed and at least three seeds.")
+        kept = [(row["candidate"] - row["baseline"]) if row["accepted"] else 0.0 for row in runs]
+        entries.append({
+            "benchmark": benchmark, "method": method, "model_fingerprint": runs[0]["model_fingerprint"],
+            "artifact_type": artifact_type, "objective": objective, "runs": len(runs),
+            "mean_gain": round(sum(kept) / len(kept), 6),
+            "cost_microusd": max(row["spent_microusd"] for row in runs),
+            "calls": max(row["calls"] for row in runs),
+        })
+    return entries
 
 
 def main() -> int:
@@ -173,17 +204,21 @@ def main() -> int:
     parser.add_argument("--seeds", nargs="+", type=int, help="paired seeds, default 11 22 33")
     parser.add_argument("--trials", type=int, help="proposal limit per job, default 4 for capability or 2 for smoke")
     parser.add_argument("--seconds", type=int, default=300, help="gateway runtime cap per job")
+    parser.add_argument("--holdout-repeats", type=int, default=1, help="tries per holdout case, 1-5")
     parser.add_argument("--dataset", type=Path, help="JSON file with artifact and task fields")
     parser.add_argument("--run-id", default=uuid4().hex, help="reuse with the same options to resume without duplicate jobs")
     parser.add_argument("--output", type=Path, help="save report JSON, without credentials, fixtures, or artifacts")
+    parser.add_argument("--evidence-out", type=Path, help="write routing evidence for the gateway's auto route (3+ seeds)")
     args = parser.parse_args()
 
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,72}", args.run_id):
         parser.error("--run-id must contain 1–72 letters, digits, dots, underscores, or dashes")
     if not 1 <= args.seconds <= 3600:
         parser.error("--seconds must be between 1 and 3600")
-    if args.smoke and any(option is not None for option in (args.model, args.job_cap, args.seeds, args.dataset)):
-        parser.error("--smoke supplies its own demo model, zero budget, seed, and dataset")
+    if not 1 <= args.holdout_repeats <= 5:
+        parser.error("--holdout-repeats must be between 1 and 5")
+    if args.smoke and any(option is not None for option in (args.model, args.job_cap, args.seeds, args.dataset, args.evidence_out)):
+        parser.error("--smoke supplies its own demo model, zero budget, seed, and dataset, and produces no routing evidence")
     if not args.smoke and (args.model is None or args.job_cap is None or args.job_cap > 1_000_000_000):
         parser.error("a capability benchmark needs --model and an explicit --job-cap of at most $1000")
     seeds = [11] if args.smoke else args.seeds or [11, 22, 33]
@@ -209,6 +244,10 @@ def main() -> int:
 def benchmark(args, seeds: list[int], trials: int) -> int:
     if args.output and args.output.exists():
         raise BenchmarkError("The output report already exists. Choose a new path or omit --output.")
+    if args.evidence_out and args.evidence_out.exists():
+        raise BenchmarkError("The evidence file already exists. Choose a new path or omit --evidence-out.")
+    if args.evidence_out and len(seeds) < 3:
+        raise BenchmarkError("Routing evidence needs at least three seeds, for example --seeds 11 22 33.")
     model_id, cap = ("demo", 0) if args.smoke else (args.model, args.job_cap)
     dataset = args.dataset or Path(__file__).with_name("gateway_benchmark_tickets.json")
     fixture = DEMO if args.smoke else json.loads(dataset.read_text(encoding="utf-8"))
@@ -221,9 +260,9 @@ def benchmark(args, seeds: list[int], trials: int) -> int:
         steps = len(fixture["artifact"]["steps"])
     else:
         raise BenchmarkError("The dataset needs a prompt or prompt-chain artifact.")
-    if not 1 <= train <= 32 or not 1 <= holdout <= 24 or not 1 <= steps <= 4:
-        raise BenchmarkError("Use 1–32 training cases, 1–24 holdout cases, and at most four prompt steps.")
-    calls = steps * ((trials + 1) * train + 2 * holdout) + trials
+    if not 1 <= train <= 32 or not MIN_HOLDOUT <= holdout <= MAX_HOLDOUT or not 1 <= steps <= 4:
+        raise BenchmarkError(f"Use 1–32 training cases, {MIN_HOLDOUT}–{MAX_HOLDOUT} holdout cases, and at most four prompt steps.")
+    calls = steps * ((trials + 1) * train + 2 * holdout * args.holdout_repeats) + trials
     if calls > 1000:
         raise BenchmarkError("This dataset and trial count exceed the 1000-call gateway limit. Lower --trials.")
 
@@ -250,15 +289,15 @@ def benchmark(args, seeds: list[int], trials: int) -> int:
     budget = {"max_calls": calls, "max_cost_microusd": cap, "max_seconds": args.seconds}
     total = 2 * len(seeds) * cap
     print(f"Run ID {args.run_id}  |  {'Simulator smoke' if args.smoke else 'Capability benchmark'}  |  model {model_id}")
-    print(f"Fixture {fixture_hash[:12]}  |  {train} training + {holdout} holdout  |  paired seeds: {len(seeds)}, serial")
+    print(f"Fixture {fixture_hash[:12]}  |  {train} training + {holdout} holdout × {args.holdout_repeats}  |  paired seeds: {len(seeds)}, serial")
     print(f"Caps {calls} calls and {dollars(cap)} per job, {dollars(total)} across this run.")
-    print(f"{'Seed':>10}  {'Method':<11}  {'Before':>7}  {'After':>7}  {'Gain pp':>7}  {'Accepted':>8}  {'Calls':>5}  {'Spent':>12}  {'Uncertain':>12}  State and job ID", flush=True)
+    print(f"{'Seed':>10}  {'Method':<11}  {'Before':>7}  {'After':>7}  {'Gain pp':>7}  {'p':>7}  {'Verdict':<13}  {'Calls':>5}  {'Spent':>12}  {'Uncertain':>12}  State and job ID", flush=True)
     rows = []
     fingerprint = None
     for index, seed in enumerate(seeds):
         for method in (METHODS if index % 2 == 0 else tuple(reversed(METHODS))):
             request = {**fixture, "method": method, "model": model_id, "seed": seed, "budget": budget,
-                       "max_trials": trials, "objective": "normalized"}
+                       "max_trials": trials, "objective": "normalized", "holdout_repeats": args.holdout_repeats}
             row = outcome(run_job(gateway, request, f"bench-{args.run_id}-{seed}-{method}"), seed, method)
             rows.append(row)
             print_row(row)
@@ -274,14 +313,30 @@ def benchmark(args, seeds: list[int], trials: int) -> int:
     losses = sum(delta < -1e-9 for delta in differences)
     spent = sum(row["spent_microusd"] for row in rows)
     print(f"Evolution vs reflection on paired gains: {wins} wins, {losses} losses, {len(seeds) - wins - losses} ties. Total settled spend {dollars(spent)}.")
+    for method in METHODS:
+        improved = sum(row["verdict"] == "improved" for row in rows if row["method"] == method)
+        print(f"{method}: significant improvement in {improved} of {len(seeds)} jobs.")
     if args.output:
         report = {"run_id": args.run_id, "model": model_id, "smoke": args.smoke, "fixture_sha256": fixture_hash,
                   "budget_per_job": budget, "total_cap_microusd": total, "rows": rows}
         with args.output.open("x", encoding="utf-8") as target:
             json.dump(report, target, indent=2, allow_nan=False)
             target.write("\n")
-    if args.smoke and not all(row["baseline"] == 0.5 and row["candidate"] == 1 and row["accepted"] and row["spent_microusd"] == 0 for row in rows):
-        raise BenchmarkError("The simulator did not reproduce its expected 50% → 100% result at zero spend.")
+    if args.evidence_out:
+        name = (args.dataset.stem if args.dataset else "gateway-benchmark-tickets")[:48]
+        entries = evidence_rows(
+            rows, seeds, benchmark=f"{name}-{fixture_hash[:12]}",
+            artifact_type=fixture["artifact"]["type"], objective="normalized",
+        )
+        with args.evidence_out.open("x", encoding="utf-8") as target:
+            json.dump(entries, target, indent=2, allow_nan=False)
+            target.write("\n")
+        print(f"Wrote routing evidence for {len(entries)} methods to {args.evidence_out}.")
+    if args.smoke and not all(
+        (row["baseline"], row["candidate"]) == SMOKE_RESULT and row["accepted"] and row["verdict"] == "improved"
+        and row["spent_microusd"] == 0 for row in rows
+    ):
+        raise BenchmarkError("The simulator did not reproduce its expected 37.5% → 100% significant result at zero spend.")
     return 0
 
 

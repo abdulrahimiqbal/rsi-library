@@ -24,6 +24,14 @@ class ConfigError(ValueError):
     """A configuration, candidate, or component result cannot be used."""
 
 
+class ProposalRejected(ConfigError):
+    """A proposer produced something unusable, such as malformed model output.
+
+    By default this ends the run like any other configuration error. A caller that
+    meters proposals can record it as a rejected round instead (see ``Controls``).
+    """
+
+
 @dataclass(frozen=True)
 class Case:
     input: JSONValue
@@ -62,11 +70,17 @@ Judge = Callable[[JSONValue, JSONValue, Settings], float]
 
 @dataclass(frozen=True)
 class Feedback:
-    """Training observation made available to the proposer, without the expected output."""
+    """Training observation made available to the proposer.
+
+    Harnesses leave ``expected`` unset by default, so proposers learn only from scores.
+    A harness may reveal training labels, as model-based prompt optimizers need them.
+    Holdout labels never reach the proposer either way.
+    """
 
     input: JSONValue
     prediction: JSONValue
     score: float
+    expected: JSONValue = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +120,8 @@ class Trial:
     candidate: JSONValue
     note: str
     feedback: tuple[Feedback, ...]
+    parent_ids: tuple[int, ...] = ()
+    case_scores: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -116,27 +132,52 @@ class Proposal:
 
 @dataclass(frozen=True)
 class ProposalContext:
-    """A selected parent's feedback and the candidate/score history (without feedback)."""
+    """The selected parents' feedback and the candidate/score history (without feedback).
+
+    ``parent`` is the primary parent. ``parents`` lists every selected parent, primary
+    first, for proposers that combine several candidates.
+    """
 
     parent: Trial
     history: tuple[Trial, ...]
     rng: random.Random
     settings: Settings
     target: TargetContext
+    parents: tuple[Trial, ...] = ()
 
 
 @dataclass(frozen=True)
 class SearchContext:
-    """Candidate/score history, without per-case observations."""
+    """Candidate/score history with per-case scores, but no inputs or predictions."""
 
     history: tuple[Trial, ...]
     rng: random.Random
     settings: Settings
 
 
+@dataclass(frozen=True)
+class Controls:
+    """Optional loop behaviour for callers that pay for each proposal and evaluation.
+
+    With every option off (the default), a run behaves as documented in ``run``.
+    """
+
+    # Record a repeated candidate as a duplicate round instead of evaluating it again.
+    skip_duplicates: bool = False
+    # Record a ProposalRejected or a failed candidate validation as a rejected round.
+    record_rejections: bool = False
+    # Candidates with the same key share one training evaluation.
+    evaluation_key: Callable[[JSONValue], str] | None = None
+    # Called with {"stage": ..., "round": ...} before each proposal and each new evaluation.
+    observe: Callable[[dict], None] | None = None
+
+
 Proposer = Callable[[ProposalContext], Proposal]
-Search = Callable[[SearchContext], int]
+# A search returns the next parent's trial ID, or a sequence of up to four distinct IDs
+# with the primary parent first.
+Search = Callable[[SearchContext], "int | Sequence[int]"]
 Component = Target | Proposer | Judge | Search | Harness
+MAX_PARENTS = 4
 
 
 @dataclass(frozen=True)
@@ -307,35 +348,102 @@ def _evaluate(prepared: _Prepared, candidate: JSONValue, cases: tuple[Case, ...]
         raise ConfigError("Evaluation feedback must be a tuple of Feedback objects.")
     feedback = tuple(
         Feedback(json_value(row.input, "Feedback input"), json_value(row.prediction, "Feedback prediction"),
-                 unit_score(row.score, "Feedback score"))
+                 unit_score(row.score, "Feedback score"), json_value(row.expected, "Feedback expected output"))
         for row in result.feedback
     )
     return Evaluation(score, feedback)
 
 
-def _run(prepared: _Prepared) -> dict:
+def _parent_ids(choice: object, trials: Mapping[int, Trial]) -> tuple[int, ...]:
+    ids = (choice,) if type(choice) is int else tuple(choice) if isinstance(choice, (list, tuple)) else ()
+    if (
+        not 1 <= len(ids) <= MAX_PARENTS or len(set(ids)) != len(ids)
+        or not all(type(id) is int and id in trials for id in ids)
+    ):
+        raise ConfigError(f"Search must select 1 to {MAX_PARENTS} distinct earlier evaluated trial IDs as parents.")
+    return ids
+
+
+def _record(trial: Trial, status: str = "evaluated") -> dict:
+    return {
+        "id": trial.id,
+        "parent_id": trial.parent_id,
+        "parent_ids": list(trial.parent_ids),
+        "status": status,
+        "score": trial.score,
+        "best_score": trial.best_score,
+        "candidate": trial.candidate,
+        "note": trial.note,
+    }
+
+
+def _run(prepared: _Prepared, controls: Controls = Controls()) -> dict:
     rng = random.Random(prepared.seed)
-    baseline = _evaluate(prepared, prepared.initial, prepared.task.train)
-    best = Trial(0, None, baseline.score, baseline.score, prepared.initial, "Starting candidate", baseline.feedback)
-    trials = [best]
-    for id in range(1, prepared.budget):
-        # Only the selected parent's training observations are needed for proposing.
-        history = tuple(replace(trial, candidate=deepcopy(trial.candidate), feedback=()) for trial in trials)
-        parent_id = prepared.search(SearchContext(history, rng, deepcopy(prepared.settings["search"])))
-        if type(parent_id) is not int or not 0 <= parent_id < id:
-            raise ConfigError("Search must select an earlier trial ID as the next parent.")
-        proposal_history = tuple(replace(trial, candidate=deepcopy(trial.candidate), feedback=()) for trial in trials)
-        proposal = prepared.proposer(ProposalContext(
-            deepcopy(trials[parent_id]), proposal_history, rng,
-            deepcopy(prepared.settings["proposer"]), deepcopy(prepared.context.target),
-        ))
-        if not isinstance(proposal, Proposal) or not isinstance(proposal.note, str):
-            raise ConfigError("The proposer must return a Proposal with a text note.")
-        candidate = json_value(proposal.candidate, "Proposed candidate")
-        prepared.target.validate(deepcopy(candidate), deepcopy(prepared.context.target))
+    observe = controls.observe or (lambda event: None)
+    cache: dict[str, Evaluation] = {}
+    evaluations = 0
+
+    def evaluate(candidate: JSONValue, stage: str, round: int) -> Evaluation:
+        nonlocal evaluations
+        key = controls.evaluation_key(deepcopy(candidate)) if controls.evaluation_key else None
+        if key is not None and key in cache:
+            return cache[key]
+        observe({"stage": stage, "round": round})
         result = _evaluate(prepared, candidate, prepared.task.train)
-        trial = Trial(id, parent_id, result.score, max(result.score, best.score), candidate, proposal.note, result.feedback)
-        trials.append(trial)
+        evaluations += 1
+        if key is not None:
+            cache[key] = result
+        return result
+
+    def scores(result: Evaluation) -> tuple[float, ...]:
+        return tuple(row.score for row in result.feedback)
+
+    baseline = evaluate(prepared.initial, "baseline_train", 0)
+    best = Trial(0, None, baseline.score, baseline.score, prepared.initial, "Starting candidate", baseline.feedback,
+                 (), scores(baseline))
+    trials = {0: best}
+    records = [_record(best)]
+    seen = {canonical_json(prepared.initial)}
+    for id in range(1, prepared.budget):
+        # Search sees scores only; proposers also see the selected parents' training observations.
+        history = tuple(replace(trial, candidate=deepcopy(trial.candidate), feedback=()) for trial in trials.values())
+        parent_ids = _parent_ids(prepared.search(SearchContext(history, rng, deepcopy(prepared.settings["search"]))), trials)
+        parents = tuple(deepcopy(trials[parent_id]) for parent_id in parent_ids)
+        proposal_history = tuple(replace(trial, candidate=deepcopy(trial.candidate), feedback=()) for trial in trials.values())
+        observe({"stage": "propose", "round": id})
+        try:
+            proposal = prepared.proposer(ProposalContext(
+                parents[0], proposal_history, rng,
+                deepcopy(prepared.settings["proposer"]), deepcopy(prepared.context.target), parents,
+            ))
+            if not isinstance(proposal, Proposal) or not isinstance(proposal.note, str):
+                raise ConfigError("The proposer must return a Proposal with a text note.")
+            candidate = json_value(proposal.candidate, "Proposed candidate")
+            try:
+                prepared.target.validate(deepcopy(candidate), deepcopy(prepared.context.target))
+            except ConfigError as exc:
+                raise ProposalRejected(str(exc)) from exc
+        except ProposalRejected as exc:
+            if not controls.record_rejections:
+                raise
+            records.append({
+                "id": id, "parent_id": parent_ids[0], "parent_ids": list(parent_ids), "status": "rejected",
+                "score": None, "best_score": best.score, "candidate": None, "note": str(exc),
+            })
+            continue
+        key = canonical_json(candidate)
+        if controls.skip_duplicates and key in seen:
+            records.append({
+                "id": id, "parent_id": parent_ids[0], "parent_ids": list(parent_ids), "status": "duplicate",
+                "score": None, "best_score": best.score, "candidate": candidate, "note": proposal.note,
+            })
+            continue
+        seen.add(key)
+        result = evaluate(candidate, "candidate_train", id)
+        trial = Trial(id, parent_ids[0], result.score, max(result.score, best.score), candidate, proposal.note,
+                      result.feedback, parent_ids, scores(result))
+        trials[id] = trial
+        records.append(_record(trial))
         if trial.score > best.score:
             best = trial
 
@@ -347,31 +455,24 @@ def _run(prepared: _Prepared) -> dict:
         "best_trial_id": best.id,
         "holdout_score": holdout.score if holdout else None,
         "best_candidate": best.candidate,
-        "evaluations_used": len(trials),
+        "evaluations_used": evaluations,
         "holdout_evaluations": int(holdout is not None),
         "train_cases": len(prepared.task.train),
         "holdout_cases": len(prepared.task.holdout),
-        "trials": [
-            {
-                "id": trial.id,
-                "parent_id": trial.parent_id,
-                "score": trial.score,
-                "best_score": trial.best_score,
-                "candidate": trial.candidate,
-                "note": trial.note,
-            }
-            for trial in trials
-        ],
+        "trials": records,
     }
 
 
-def run(config: Mapping[str, object], registry: Registry) -> dict:
-    """Spend exactly ``budget`` training evaluations, including the baseline.
+def run(config: Mapping[str, object], registry: Registry, controls: Controls | None = None) -> dict:
+    """Run ``budget - 1`` proposal rounds after evaluating the starting candidate.
 
-    A duplicate proposal still costs an evaluation. Ties keep the earliest best
-    trial. Only that winner is evaluated on holdout, outside the search budget.
+    By default every round is evaluated, so the run spends exactly ``budget`` training
+    evaluations, including the baseline, and a duplicate proposal still costs an
+    evaluation. ``controls`` can make duplicate, rejected, or equivalent candidates
+    skip evaluation instead. Ties keep the earliest best trial. Only that winner is
+    evaluated on holdout, outside the search budget.
     """
-    return _run(_prepare(config, registry))
+    return _run(_prepare(config, registry), controls or Controls())
 
 
 def compare(configs: Sequence[Mapping[str, object]], registry: Registry) -> dict:

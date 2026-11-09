@@ -2,7 +2,7 @@ import copy
 import unittest
 
 from examples.custom_task import experiment
-from rsi_library import ConfigError, catalog, compare, make_registry, run
+from rsi_library import ConfigError, Controls, ProposalRejected, catalog, compare, make_registry, run
 from rsi_library.prompt import PromptEditor, PromptTarget
 
 
@@ -76,6 +76,53 @@ class Experiments(unittest.TestCase):
         self.assertEqual(result["best_score"], 1)
         self.assertEqual(result["holdout_score"], 1)
         self.assertEqual(result["evaluations_used"], 8)
+
+    def test_controls_skip_repeats_record_rejections_and_share_evaluations(self):
+        evaluated, events = [], []
+        proposals = iter(["Lowercase.", "Lowercase.", None, "Lowercase. ", "Upper."])
+
+        def predict(prompt, input):
+            evaluated.append(prompt)
+            return input.lower() if prompt.strip() == "Lowercase." else input
+
+        def revise(prompt, context):
+            proposal = next(proposals)
+            if proposal is None:
+                raise ProposalRejected("The editor returned nothing usable.")
+            self.assertEqual(context.parents[0].id, context.parent.id)
+            return proposal
+
+        def pair(context):
+            ranked = sorted(context.history, key=lambda trial: (-trial.score, trial.id))
+            self.assertTrue(all(len(trial.case_scores) == 1 for trial in context.history))
+            return [ranked[0].id, ranked[1].id] if len(ranked) > 1 else ranked[0].id
+
+        self.registry.register("target", "custom-prompt", PromptTarget(predict, "Echo."), name="Agent", description="A test agent.")
+        self.registry.register("proposer", "custom-editor", PromptEditor(revise), name="Editor", description="A test editor.")
+        self.registry.register("search", "pair", pair, name="Pair", description="Best two parents.")
+        result = run({
+            **self.configs["greedy-prompt"],
+            "target": "custom-prompt", "proposer": "custom-editor", "search": "pair", "budget": 6,
+            "task": {"train": [{"input": "ONE", "expected": "one"}], "holdout": [{"input": "TWO", "expected": "two"}]},
+        }, self.registry, Controls(
+            skip_duplicates=True, record_rejections=True, observe=events.append,
+            evaluation_key=lambda candidate: candidate.strip(),
+        ))
+        self.assertEqual([trial["status"] for trial in result["trials"]],
+                         ["evaluated", "evaluated", "duplicate", "rejected", "evaluated", "evaluated"])
+        self.assertEqual(result["trials"][3]["note"], "The editor returned nothing usable.")
+        self.assertEqual(result["trials"][2]["parent_ids"], [1, 0])
+        # "Lowercase. " shares the evaluation of "Lowercase."; the holdout check runs the winner once.
+        self.assertEqual(evaluated, ["Echo.", "Lowercase.", "Upper.", "Lowercase."])
+        self.assertEqual(result["evaluations_used"], 3)
+        self.assertEqual(result["best_trial_id"], 1)
+        self.assertEqual([event["stage"] for event in events if event["stage"] != "propose"],
+                         ["baseline_train", "candidate_train", "candidate_train"])
+        # Without controls, a rejected proposal still ends the run.
+        proposals = iter([None])
+        with self.assertRaises(ProposalRejected):
+            run({**self.configs["greedy-prompt"], "target": "custom-prompt", "proposer": "custom-editor", "budget": 2,
+                 "task": {"train": [{"input": "ONE", "expected": "one"}]}}, self.registry)
 
     def test_prompt_adapter_uses_training_feedback_and_scores_only_winner_on_holdout(self):
         calls = []

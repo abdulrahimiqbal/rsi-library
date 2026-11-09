@@ -8,12 +8,19 @@ while selecting candidates.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Set
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import random
 import re
+from statistics import fmean
 import unicodedata
 
+from .. import engine
+from ..engine import (
+    Case, ConfigError, Controls, Evaluation, Feedback, Proposal, ProposalContext, ProposalRejected,
+    Registry, SearchContext, Task, Trial,
+)
 from ..stats import ALPHA, minimum_wins, paired_comparison
 
 
@@ -268,23 +275,112 @@ def _evaluate(artifact: dict, cases: list[dict], stage: str, objective: str, inv
     return feedback
 
 
-def _parents(method: str, trials: list[_Trial], rng: random.Random) -> list[_Trial]:
-    if method == "self-revise-v1":
-        # On a tie, give a newly inherited editing policy a chance to produce a descendant.
-        return [max(trials, key=lambda trial: (trial.correct, trial.id))]
+# Each built-in method is a loop on the shared engine (rsi_library.engine): the same
+# target, harness, and judge, with its own search and proposer.
 
-    primary = max(trials, key=lambda trial: trial.correct)
-    if method == "reflect-v1" or len(trials) < 2:
-        return [primary]
 
-    def complement(trial: _Trial) -> tuple[int, int]:
-        wins = sum(row["correct"] and not first["correct"] for row, first in zip(trial.feedback, primary.feedback))
-        return wins, trial.correct
+def _best_first(context: SearchContext) -> int:
+    """Reflective search builds on the highest scoring candidate, the earliest on ties."""
+    return max(context.history, key=lambda trial: trial.score).id
 
-    alternatives = [trial for trial in trials if trial.id != primary.id]
+
+def _newest_best(context: SearchContext) -> int:
+    """On a tie, give a newly inherited editing policy a chance to produce a descendant."""
+    return max(context.history, key=lambda trial: (trial.score, trial.id)).id
+
+
+def _complementary(context: SearchContext) -> int | tuple[int, int]:
+    """Pair the best candidate with the one that fixes the most of its training errors."""
+    primary = max(context.history, key=lambda trial: trial.score)
+    alternatives = [trial for trial in context.history if trial.id != primary.id]
+    if not alternatives:
+        return primary.id
+
+    def complement(trial: Trial) -> tuple[int, float]:
+        wins = sum(score == 1 and first != 1 for score, first in zip(trial.case_scores, primary.case_scores))
+        return wins, trial.score
+
     best = max(complement(trial) for trial in alternatives)
-    secondary = rng.choice([trial for trial in alternatives if complement(trial) == best])
-    return [primary, secondary]
+    secondary = context.rng.choice([trial for trial in alternatives if complement(trial) == best])
+    return primary.id, secondary.id
+
+
+_SEARCHES = {
+    "reflect-v1": ("best-first", _best_first),
+    "evolve-v1": ("complementary", _complementary),
+    "self-revise-v1": ("newest-best", _newest_best),
+}
+
+
+class _ArtifactTarget:
+    """The submitted prompt or prompt chain, run through the metered model client."""
+
+    def __init__(self, original: dict, invoke: Completion, stage: Callable[[], str]):
+        self._original = original
+        self._invoke = invoke
+        self._stage = stage
+
+    def start(self, context) -> dict:
+        return deepcopy(self._original)
+
+    def validate(self, candidate, context) -> None:
+        try:
+            artifact = _artifact(candidate)
+        except MethodError as exc:
+            raise ConfigError(str(exc)) from None
+        if artifact["type"] != self._original["type"] or (
+            artifact["type"] == "prompt-chain"
+            and [step["name"] for step in artifact["steps"]] != [step["name"] for step in self._original["steps"]]
+        ):
+            raise ConfigError("A candidate must keep the original artifact type and workflow steps.")
+
+    def predict(self, candidate, input, context) -> str:
+        return _predict(candidate, input, self._stage(), self._invoke)
+
+
+class _TrainingFixtures:
+    """Score training cases with the job objective. Holdout cases never enter the loop."""
+
+    def prepare(self, task, settings) -> Task:
+        return Task(tuple(Case(row["input"], row["expected"]) for row in task["train"]))
+
+    def evaluate(self, candidate, cases, target, judge, context) -> Evaluation:
+        feedback = []
+        for case in cases:
+            output = target.predict(candidate, case.input, context.target)
+            # Model-based proposers learn from training labels, so the harness reveals them.
+            feedback.append(Feedback(case.input, output, judge(output, case.expected, context.judge_settings), case.expected))
+        return Evaluation(fmean(row.score for row in feedback), tuple(feedback))
+
+
+def _exact(prediction, expected, settings) -> float:
+    return float(prediction == expected)
+
+
+def _normalized_match(prediction, expected, settings) -> float:
+    return float(_normalized(prediction) == _normalized(expected))
+
+
+_JUDGES = {"exact": _exact, "normalized": _normalized_match}
+
+
+def _view(trial: Trial) -> _Trial:
+    return _Trial(trial.id, trial.candidate, [
+        {"input": row.input, "expected": row.expected, "output": row.prediction, "correct": row.score == 1}
+        for row in trial.feedback
+    ])
+
+
+def _proposer(method: str, original: dict, invoke: Completion) -> Callable[[ProposalContext], Proposal]:
+    def propose(context: ProposalContext) -> Proposal:
+        parents = [_view(trial) for trial in (context.parents or (context.parent,))]
+        output = invoke("propose", _proposal_messages(method, parents, context.rng))
+        try:
+            return Proposal(_candidate(output, method, original))
+        except MethodError as exc:
+            raise ProposalRejected(str(exc)) from None
+
+    return propose
 
 
 def _examples(trial: _Trial, rng: random.Random) -> list[dict]:
@@ -450,44 +546,50 @@ def execute(
         if progress is not None:
             progress({"stage": stage, "calls": calls, "trials": trials, "planned_trials": planned})
 
-    rng = random.Random(request["seed"])
-    report("baseline_train", 0)
-    baseline = _Trial(0, original, _evaluate(original, train, "baseline_train", objective, invoke))
-    scored = [baseline]
-    trace = [{"id": 0, "parent_ids": [], "status": "evaluated", "score": baseline.score, "artifact": original}]
-    seen = {_identity(original)}
-    feedback_cache = {_execution_identity(original): baseline.feedback}
-    for id_ in range(1, planned + 1):
-        parents = _parents(method_id, scored, rng)
-        entry = {"id": id_, "parent_ids": [parent.id for parent in parents]}
-        report("propose", id_ - 1)
-        output = invoke("propose", _proposal_messages(method_id, parents, rng))
-        try:
-            candidate = _candidate(output, method_id, original)
-        except MethodError as exc:
-            trace.append({**entry, "status": "invalid", "score": None, "reason": str(exc)})
-            continue
-        identity = _identity(candidate)
-        if identity in seen:
-            trace.append({**entry, "status": "duplicate", "score": None})
-            continue
-        seen.add(identity)
-        execution = _execution_identity(candidate)
-        if execution not in feedback_cache:
-            report("candidate_train", id_ - 1)
-            feedback_cache[execution] = _evaluate(candidate, train, "candidate_train", objective, invoke)
-        trial = _Trial(id_, candidate, feedback_cache[execution])
-        scored.append(trial)
-        trace.append({**entry, "status": "evaluated", "score": trial.score, "artifact": candidate})
+    stage = "baseline_train"
 
-    winner = max(scored, key=lambda trial: trial.correct)
-    verified = verify_candidate(request, winner.artifact, invoke, lambda stage: report(stage, planned))
+    def observe(event: dict) -> None:
+        nonlocal stage
+        stage = event["stage"]
+        report(stage, max(0, event["round"] - 1))
+
+    search_id, search = _SEARCHES[method_id]
+    name, description, _ = _METHODS[method_id]
+    registry = Registry()
+    registry.register("target", "artifact", _ArtifactTarget(original, invoke, lambda: stage),
+                      name="Submitted artifact", description="The prompt or prompt chain being improved.")
+    registry.register("proposer", method_id, _proposer(method_id, original, invoke), name=name, description=description)
+    registry.register("judge", objective, _JUDGES[objective], name=objective, description="The job's scoring objective.")
+    registry.register("search", search_id, search, name=search_id, description="How this method picks parents.")
+    registry.register("harness", "training-fixtures", _TrainingFixtures(),
+                      name="Training fixtures", description="Training cases only; the gateway keeps the holdout.")
+    outcome = engine.run(
+        {
+            "name": method_id, "target": "artifact", "proposer": method_id, "judge": objective,
+            "search": search_id, "harness": "training-fixtures", "budget": planned + 1,
+            "seed": request["seed"], "task": {"train": train}, "initial_candidate": original,
+        },
+        registry,
+        Controls(skip_duplicates=True, record_rejections=True, evaluation_key=_execution_identity, observe=observe),
+    )
+
+    trace = []
+    for record in outcome["trials"]:
+        entry = {"id": record["id"], "parent_ids": record["parent_ids"]}
+        if record["status"] == "evaluated":
+            trace.append({**entry, "status": "evaluated", "score": record["score"], "artifact": record["candidate"]})
+        elif record["status"] == "duplicate":
+            trace.append({**entry, "status": "duplicate", "score": None})
+        else:
+            trace.append({**entry, "status": "invalid", "score": None, "reason": record["note"]})
+
+    verified = verify_candidate(request, outcome["best_candidate"], invoke, lambda name: report(name, planned))
     return {
         "method": method_id,
-        "baseline_train": baseline.score,
-        "best_train": winner.score,
+        "baseline_train": outcome["baseline_score"],
+        "best_train": outcome["best_score"],
         **verified,
-        "candidate_trial_id": winner.id,
+        "candidate_trial_id": outcome["best_trial_id"],
         "trials": trace,
         "train_cases": len(train),
         "model_calls": calls,
