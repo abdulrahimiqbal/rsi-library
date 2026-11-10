@@ -37,7 +37,7 @@ from ..builtins import TEMPLATES, catalog as offline_catalog, make_registry
 from ..engine import ConfigError
 from . import methods
 from .methods import MethodError
-from .methods_gallery import FAMILIES, SEARCH_STYLES, gallery
+from .methods_gallery import CHECKED, FAMILIES, SEARCH_STYLES, gallery
 
 DRIVEN_IDS = tuple(methods._METHODS)
 MAX_DRIVEN_TRIALS = 10
@@ -226,7 +226,11 @@ def catalog() -> dict:
     return {
         "loops": loops,
         "objectives": methods.objectives(),
-        "gallery": {"families": list(FAMILIES), "search_styles": list(SEARCH_STYLES), "methods": gallery(loops)},
+        "gallery": {
+            "families": list(FAMILIES), "search_styles": list(SEARCH_STYLES), "checked": CHECKED,
+            "suggest": "https://github.com/abdulrahimiqbal/rsi-library/issues/new?template=suggest-method.yml",
+            "methods": gallery(loops),
+        },
         "benchmarks": benchmark_results(),
         "components": offline["components"],
         "example_task": offline["example_task"],
