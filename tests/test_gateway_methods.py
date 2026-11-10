@@ -72,7 +72,15 @@ class GatewayMethods(unittest.TestCase):
         self.assertEqual(result["artifact"], config["artifact"])
         self.assertFalse(result["accepted"])
         self.assertEqual(result["evidence"]["verdict"], "not_improved")
-        self.assertEqual(phases[-1], {"stage": "candidate_holdout", "calls": 13, "trials": 1, "planned_trials": 1})
+        self.assertEqual(phases[-1], {
+            "stage": "candidate_holdout", "calls": 13, "trials": 1, "planned_trials": 1, "best_train": 1.0,
+            "trace": [
+                {"id": 0, "parent_ids": [], "status": "evaluated", "score": 0.0},
+                {"id": 1, "parent_ids": [0], "status": "evaluated", "score": 1.0},
+            ],
+        })
+        self.assertEqual(phases[0]["best_train"], None)
+        self.assertEqual(phases[0]["trace"], [])
 
     def test_a_gain_that_could_be_chance_keeps_the_original(self):
         config = validate_request(request("reflect-v1", calls=21))

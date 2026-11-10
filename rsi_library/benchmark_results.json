@@ -1,0 +1,177 @@
+{
+  "description": "Each offline loop ran on every task with every seed at each budget (versions scored, including the start). holdout_gain is the winner's holdout accuracy minus the starting prompt's, averaged over tasks and seeds; gain_per_version divides it by the versions tried after the start.",
+  "seeds": 20,
+  "budgets": [
+    12,
+    24,
+    48
+  ],
+  "tasks": [
+    {
+      "id": "tickets",
+      "name": "Support tickets",
+      "description": "Route a support message to billing or account.",
+      "train_cases": 12,
+      "holdout_cases": 8,
+      "labels": 2,
+      "baseline_holdout": 0.5
+    },
+    {
+      "id": "intents",
+      "name": "Product requests",
+      "description": "Tell cancellations, upgrades, bug reports and questions apart.",
+      "train_cases": 16,
+      "holdout_cases": 12,
+      "labels": 4,
+      "baseline_holdout": 0.25
+    },
+    {
+      "id": "reviews",
+      "name": "Product reviews",
+      "description": "Label a review positive, negative or neutral.",
+      "train_cases": 15,
+      "holdout_cases": 12,
+      "labels": 3,
+      "baseline_holdout": 0.3333
+    },
+    {
+      "id": "languages",
+      "name": "Languages",
+      "description": "Tell English, French and Spanish sentences apart.",
+      "train_cases": 15,
+      "holdout_cases": 12,
+      "labels": 3,
+      "baseline_holdout": 0.3333
+    }
+  ],
+  "loops": {
+    "greedy-prompt": {
+      "12": {
+        "holdout_gain": 0.2443,
+        "train_gain": 0.4247,
+        "better_than_start": 0.95,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0222,
+        "per_task": {
+          "tickets": 0.2938,
+          "intents": 0.1875,
+          "reviews": 0.1917,
+          "languages": 0.3042
+        }
+      },
+      "24": {
+        "holdout_gain": 0.3474,
+        "train_gain": 0.6064,
+        "better_than_start": 0.975,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0151,
+        "per_task": {
+          "tickets": 0.2938,
+          "intents": 0.3958,
+          "reviews": 0.3042,
+          "languages": 0.3958
+        }
+      },
+      "48": {
+        "holdout_gain": 0.3682,
+        "train_gain": 0.6451,
+        "better_than_start": 0.9875,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0078,
+        "per_task": {
+          "tickets": 0.2938,
+          "intents": 0.475,
+          "reviews": 0.3083,
+          "languages": 0.3958
+        }
+      }
+    },
+    "archive-prompt": {
+      "12": {
+        "holdout_gain": 0.2359,
+        "train_gain": 0.3736,
+        "better_than_start": 0.975,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0214,
+        "per_task": {
+          "tickets": 0.3563,
+          "intents": 0.1542,
+          "reviews": 0.1458,
+          "languages": 0.2875
+        }
+      },
+      "24": {
+        "holdout_gain": 0.3151,
+        "train_gain": 0.5304,
+        "better_than_start": 1.0,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0137,
+        "per_task": {
+          "tickets": 0.3563,
+          "intents": 0.2833,
+          "reviews": 0.2292,
+          "languages": 0.3917
+        }
+      },
+      "48": {
+        "holdout_gain": 0.3609,
+        "train_gain": 0.6262,
+        "better_than_start": 1.0,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0077,
+        "per_task": {
+          "tickets": 0.3563,
+          "intents": 0.4,
+          "reviews": 0.2917,
+          "languages": 0.3958
+        }
+      }
+    },
+    "adaptive-improver": {
+      "12": {
+        "holdout_gain": 0.224,
+        "train_gain": 0.3723,
+        "better_than_start": 0.9125,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0204,
+        "per_task": {
+          "tickets": 0.3125,
+          "intents": 0.175,
+          "reviews": 0.175,
+          "languages": 0.2333
+        }
+      },
+      "24": {
+        "holdout_gain": 0.2917,
+        "train_gain": 0.5134,
+        "better_than_start": 0.975,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0127,
+        "per_task": {
+          "tickets": 0.3125,
+          "intents": 0.2458,
+          "reviews": 0.2667,
+          "languages": 0.3417
+        }
+      },
+      "48": {
+        "holdout_gain": 0.3375,
+        "train_gain": 0.6356,
+        "better_than_start": 0.9875,
+        "worse_than_start": 0.0,
+        "gain_per_version": 0.0072,
+        "per_task": {
+          "tickets": 0.3125,
+          "intents": 0.35,
+          "reviews": 0.3083,
+          "languages": 0.3792
+        }
+      }
+    }
+  },
+  "driven": {
+    "status": "not_measured",
+    "note": "The loops that improve your own prompt need a live model, so their results depend on the model. They have not been measured on a live model yet.",
+    "how": "python examples/lab_benchmark.py --model <openrouter model> (needs OPENROUTER_API_KEY)"
+  }
+}

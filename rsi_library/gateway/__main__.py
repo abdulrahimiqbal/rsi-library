@@ -14,6 +14,7 @@ import webbrowser
 from pathlib import Path
 
 from .api import Gateway
+from .lab import Lab
 from .providers import load_models
 from .routing import load_adapters, load_evidence
 from .store import HOSTED_OWNER_ID, MAX_COST_MICROUSD, Store, StoreError
@@ -125,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     key.add_argument("--role", choices=("read", "write"), default="write")
     revoke = commands.add_parser("revoke-key", help="revoke a workspace key by ID")
     revoke.add_argument("key_id")
-    backup = commands.add_parser("backup", help="take a consistent database backup")
+    backup = commands.add_parser("backup", help="take a consistent backup of the job store and the public runs")
     backup.add_argument("destination")
     usage = commands.add_parser("usage", help="read recorded usage for a workspace")
     usage.add_argument("workspace")
@@ -172,7 +173,11 @@ def main(argv: list[str] | None = None) -> int:
             _print({"revoked": store.revoke_key(args.key_id)})
         elif args.command == "backup":
             store.backup(args.destination)
-            _print({"backup": args.destination})
+            # Public runs live in their own database next to the job store.
+            destination = Path(args.destination)
+            runs = destination.with_name(destination.stem + ".runs" + (destination.suffix or ".db"))
+            Lab(path.with_name("lab.db")).backup(runs)
+            _print({"backup": args.destination, "runs_backup": str(runs)})
         elif args.command == "usage":
             result = {"usage": store.usage(args.workspace)}
             if args.ledger:

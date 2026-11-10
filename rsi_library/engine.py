@@ -168,7 +168,9 @@ class Controls:
     record_rejections: bool = False
     # Candidates with the same key share one training evaluation.
     evaluation_key: Callable[[JSONValue], str] | None = None
-    # Called with {"stage": ..., "round": ...} before each proposal and each new evaluation.
+    # Called before each proposal and each new evaluation with {"stage", "round",
+    # "best_score", "trace"}: the best training score so far (None before the baseline
+    # is scored) and the rounds recorded so far, without candidates.
     observe: Callable[[dict], None] | None = None
 
 
@@ -379,16 +381,24 @@ def _record(trial: Trial, status: str = "evaluated") -> dict:
 
 def _run(prepared: _Prepared, controls: Controls = Controls()) -> dict:
     rng = random.Random(prepared.seed)
-    observe = controls.observe or (lambda event: None)
     cache: dict[str, Evaluation] = {}
     evaluations = 0
+    records: list[dict] = []
 
-    def evaluate(candidate: JSONValue, stage: str, round: int) -> Evaluation:
+    def observe(stage: str, round: int, best_score: float | None) -> None:
+        if controls.observe is not None:
+            trace = [
+                {"id": record["id"], "parent_ids": list(record["parent_ids"]), "status": record["status"], "score": record["score"]}
+                for record in records
+            ]
+            controls.observe({"stage": stage, "round": round, "best_score": best_score, "trace": trace})
+
+    def evaluate(candidate: JSONValue, stage: str, round: int, best_score: float | None) -> Evaluation:
         nonlocal evaluations
         key = controls.evaluation_key(deepcopy(candidate)) if controls.evaluation_key else None
         if key is not None and key in cache:
             return cache[key]
-        observe({"stage": stage, "round": round})
+        observe(stage, round, best_score)
         result = _evaluate(prepared, candidate, prepared.task.train)
         evaluations += 1
         if key is not None:
@@ -398,11 +408,11 @@ def _run(prepared: _Prepared, controls: Controls = Controls()) -> dict:
     def scores(result: Evaluation) -> tuple[float, ...]:
         return tuple(row.score for row in result.feedback)
 
-    baseline = evaluate(prepared.initial, "baseline_train", 0)
+    baseline = evaluate(prepared.initial, "baseline_train", 0, None)
     best = Trial(0, None, baseline.score, baseline.score, prepared.initial, "Starting candidate", baseline.feedback,
                  (), scores(baseline))
     trials = {0: best}
-    records = [_record(best)]
+    records.append(_record(best))
     seen = {canonical_json(prepared.initial)}
     for id in range(1, prepared.budget):
         # Search sees scores only; proposers also see the selected parents' training observations.
@@ -410,7 +420,7 @@ def _run(prepared: _Prepared, controls: Controls = Controls()) -> dict:
         parent_ids = _parent_ids(prepared.search(SearchContext(history, rng, deepcopy(prepared.settings["search"]))), trials)
         parents = tuple(deepcopy(trials[parent_id]) for parent_id in parent_ids)
         proposal_history = tuple(replace(trial, candidate=deepcopy(trial.candidate), feedback=()) for trial in trials.values())
-        observe({"stage": "propose", "round": id})
+        observe("propose", id, best.score)
         try:
             proposal = prepared.proposer(ProposalContext(
                 parents[0], proposal_history, rng,
@@ -439,7 +449,7 @@ def _run(prepared: _Prepared, controls: Controls = Controls()) -> dict:
             })
             continue
         seen.add(key)
-        result = evaluate(candidate, "candidate_train", id)
+        result = evaluate(candidate, "candidate_train", id, best.score)
         trial = Trial(id, parent_ids[0], result.score, max(result.score, best.score), candidate, proposal.note,
                       result.feedback, parent_ids, scores(result))
         trials[id] = trial

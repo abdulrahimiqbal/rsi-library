@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rsi-library"
-version = "0.1.0"
+version = "0.3.0"
 description = "A local workbench and Python library for recursive improvement loops."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,5 +18,5 @@ rsi-gateway = "rsi_library.gateway.__main__:main"
 include = ["rsi_library*"]
 
 [tool.setuptools.package-data]
-rsi_library = ["static/*"]
+rsi_library = ["static/*", "benchmark_results.json"]
 "rsi_library.gateway" = ["static/*", "static/fonts/*"]

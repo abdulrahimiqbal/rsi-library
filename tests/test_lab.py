@@ -178,7 +178,10 @@ class PublicLoops(unittest.TestCase):
         self.assertEqual(started["result"]["protocolVersion"], "2025-06-18")
         self.assertIsNone(mcp.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}, self.lab))
         names = [entry["name"] for entry in call("tools/list")["result"]["tools"]]
-        self.assertEqual(names, ["list_loops", "run_offline_loop", "compare_offline_loops", "start_prompt_run", "submit_work", "get_run"])
+        self.assertEqual(names, [
+            "list_loops", "run_offline_loop", "compare_offline_loops", "start_prompt_run", "start_code_run",
+            "submit_work", "get_run", "delete_run",
+        ])
         self.assertEqual(len(json.loads(tool("list_loops", {})[1])["loops"]), 6)
         self.assertEqual(len(json.loads(tool("run_offline_loop", {"loop": "archive-prompt", "budget": 5})[1])["trials"]), 5)
         failed, text = tool("run_offline_loop", {"loop": "nope"})
@@ -260,6 +263,6 @@ class PublicHttp(unittest.TestCase):
         self.assertEqual(self.request("/api/runs/run_aaaaaaaaaaaaaaaaaaaa")[0], 404)
 
         status, _, body = self.request("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        self.assertEqual((status, len(json.loads(body)["result"]["tools"])), (200, 6))
+        self.assertEqual((status, len(json.loads(body)["result"]["tools"])), (200, 8))
         self.assertEqual(self.request("/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"})[0], 202)
         self.assertEqual(self.request("/mcp")[0], 405)

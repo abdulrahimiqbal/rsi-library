@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -13,7 +14,7 @@ from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
 from . import lab as lab_module, mcp
-from .lab import Lab
+from .lab import RETENTION_TEXT, Lab, with_base
 from .methods import catalog as method_catalog, evidence_policy, validate_request
 from .providers import Model
 from .routing import Adapter, choose
@@ -26,9 +27,19 @@ _ASSETS = {
     "/site.css": ("site.css", "text/css"),
     "/lab.js": ("lab.js", "text/javascript"),
     "/jobs.js": ("jobs.js", "text/javascript"),
+    "/runner.js": ("runner.js", "text/javascript"),
+    "/og.png": ("og.png", "image/png"),
 }
+_PAGE_CSP = (
+    "default-src 'self'; connect-src 'self' https://openrouter.ai; img-src 'self' data:; worker-src 'self'; "
+    "base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'"
+)
+# The worker that runs a visitor's JavaScript functions may evaluate code but reach nothing.
+_RUNNER_CSP = "default-src 'none'; script-src 'self' 'unsafe-eval'"
 _FONT_PATH = re.compile(r"/fonts/([a-z0-9-]{1,64}\.woff2)")
 _RUN_PATH = re.compile(r"/api/runs/(run_[A-Za-z0-9_-]{16,40})(/work)?")
+_RUN_PAGE = re.compile(r"/runs/(run_[A-Za-z0-9_-]{16,40})")
+_STATIC: dict[str, tuple[bytes, str]] = {}
 _HOST = re.compile(r"[A-Za-z0-9.-]{1,253}(:\d{1,5})?")
 _GUIDE_PATHS = {"/llms.txt", "/agents.md", "/AGENTS.md"}
 _JOB_PATH = re.compile(r"/v1/jobs/(job_[a-f0-9]{32})(/cancel)?")
@@ -37,6 +48,15 @@ _IDEMPOTENCY = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _MAX_BODY = 160 * 1024
 _MAX_ACCESS_BODY = 8 * 1024
 _LIMIT = 32
+
+
+def _static(filename: str) -> tuple[bytes, str]:
+    """A packaged static file and its entity tag, read once per process."""
+    cached = _STATIC.get(filename)
+    if cached is None:
+        data = files("rsi_library.gateway").joinpath("static").joinpath(filename).read_bytes()
+        cached = _STATIC[filename] = (data, '"' + hashlib.sha256(data).hexdigest()[:24] + '"')
+    return cached
 
 
 class _RateLimit:
@@ -138,24 +158,51 @@ class Handler(BaseHTTPRequestHandler):
         # Avoid logging request URLs, credentials, or submitted artifacts.
         pass
 
-    def _write(self, status: int, data: bytes, media_type: str, *, cache: str = "no-store") -> None:
+    def _secure(self) -> bool:
+        return self.server.trust_proxy and self.headers.get("X-Forwarded-Proto", "https").split(",")[0].strip() == "https"
+
+    def _write(
+        self, status: int, data: bytes, media_type: str, *, cache: str = "no-store", etag: str | None = None,
+        csp: str = _PAGE_CSP, noindex: bool = False,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", media_type if media_type.startswith("font/") else media_type + "; charset=utf-8")
+        binary = media_type.startswith(("font/", "image/"))
+        self.send_header("Content-Type", media_type if binary else media_type + "; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        if etag is not None:
+            self.send_header("ETag", etag)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         # The homepage can call OpenRouter directly with a key that stays in the visitor's browser.
-        self.send_header("Content-Security-Policy", (
-            "default-src 'self'; connect-src 'self' https://openrouter.ai; img-src 'self' data:; base-uri 'none'; "
-            "frame-ancestors 'none'; object-src 'none'; form-action 'self'"
-        ))
+        self.send_header("Content-Security-Policy", csp)
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+        if self._secure():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        if noindex:
+            self.send_header("X-Robots-Tag", "noindex")
         if self._open_api():
             self.send_header("Access-Control-Allow-Origin", "*")
         if status == 401:
             self.send_header("WWW-Authenticate", "Bearer")
         self.end_headers()
         self.wfile.write(data)
+
+    def _asset(self, filename: str, media_type: str, *, status: int = 200, noindex: bool = False) -> None:
+        data, etag = _static(filename)
+        # Revalidate pages and scripts on every visit so a deploy shows at once; fonts never change.
+        cache = "public, max-age=86400" if media_type.startswith("image/") else "no-cache"
+        if status == 200 and etag in (self.headers.get("If-None-Match") or ""):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache)
+            self.end_headers()
+            return
+        self._write(
+            status, data, media_type, cache=cache, etag=etag if status == 200 else None,
+            csp=_RUNNER_CSP if filename == "runner.js" else _PAGE_CSP, noindex=noindex,
+        )
 
     def _json(self, status: int, payload: dict) -> None:
         self._write(status, json.dumps(payload, allow_nan=False).encode(), "application/json")
@@ -197,8 +244,7 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "")
         if not _HOST.fullmatch(host):
             host = f"127.0.0.1:{self.server.server_port}"
-        secure = self.server.trust_proxy and self.headers.get("X-Forwarded-Proto", "https").split(",")[0].strip() == "https"
-        return f"{'https' if secure else 'http'}://{host}"
+        return f"{'https' if self._secure() else 'http'}://{host}"
 
     def _raw_json(self, limit: int = _MAX_BODY) -> object:
         lengths = self.headers.get_all("Content-Length", [])
@@ -223,14 +269,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id")
         self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_DELETE(self) -> None:
-        self._error(405, "This route does not support DELETE.")
+        self._handle(write=True, delete=True)
 
     def do_GET(self) -> None:
         self._handle(write=False)
@@ -238,9 +284,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._handle(write=True)
 
-    def _handle(self, *, write: bool) -> None:
+    def _handle(self, *, write: bool, delete: bool = False) -> None:
         try:
-            self._dispatch(write=write)
+            if delete:
+                self._delete()
+            else:
+                self._dispatch(write=write)
         except Conflict as exc:
             self._error(409, str(exc))
         except (ValueError, RecursionError) as exc:
@@ -252,14 +301,37 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _delete(self) -> None:
+        match = _RUN_PATH.fullmatch(urlsplit(self.path).path)
+        if not match or match[2]:
+            self._error(405, "Only a run can be deleted: DELETE /api/runs/<run id>.")
+        elif not self._limited():
+            if self.server.lab.delete(match[1]):
+                self._json(200, {"id": match[1], "deleted": True})
+            else:
+                self._error(404, "Unknown run. " + RETENTION_TEXT)
+
+    def _wants_page(self) -> bool:
+        return "text/html" in (self.headers.get("Accept") or "")
+
     def _dispatch(self, *, write: bool) -> None:
         url = urlsplit(self.path)
         path = url.path
         store = self.server.store
         if not write and path in _ASSETS:
-            filename, media_type = _ASSETS[path]
-            data = files("rsi_library.gateway").joinpath("static").joinpath(filename).read_bytes()
-            self._write(200, data, media_type)
+            self._asset(*_ASSETS[path])
+            return
+        if not write and _RUN_PAGE.fullmatch(path):
+            # A run's page is the canvas, which loads the run itself. Runs are private links.
+            self._asset("index.html", "text/html", noindex=True)
+            return
+        if not write and path == "/robots.txt":
+            self._write(200, f"User-agent: *\nAllow: /\n\nSitemap: {self._base()}/sitemap.xml\n".encode(), "text/plain", cache="public, max-age=86400")
+            return
+        if not write and path == "/sitemap.xml":
+            urls = "".join(f"<url><loc>{self._base()}{page}</loc></url>" for page in ("/", "/jobs", "/llms.txt"))
+            body = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>\n'
+            self._write(200, body.encode(), "application/xml", cache="public, max-age=86400")
             return
         if not write and path == "/health/live":
             self._json(200, {"status": "alive"})
@@ -282,7 +354,10 @@ class Handler(BaseHTTPRequestHandler):
         if self._public(path, url.query, write=write):
             return
         if not path.startswith("/v1/"):
-            self._error(404, "Route not found. GET /llms.txt describes the public API.")
+            if not write and self._wants_page():
+                self._asset("404.html", "text/html", status=404)
+            else:
+                self._error(404, "Route not found. GET /llms.txt describes the public API.")
             return
         identity = self._identity(write)
         if identity is None:
@@ -380,9 +455,9 @@ class Handler(BaseHTTPRequestHandler):
                 return True
 
             def allow(tool: str) -> bool:
-                return tool != "start_prompt_run" or self.server.lab_start_limit.allow(self._client())
+                return tool not in mcp.STARTING_TOOLS or self.server.lab_start_limit.allow(self._client())
 
-            reply = mcp.handle(self._raw_json(), lab, allow)
+            reply = mcp.handle(self._raw_json(), lab, allow, base=self._base())
             if reply is None:
                 self.send_response(202)
                 self.send_header("Content-Length", "0")
@@ -400,17 +475,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, lab_module.offline_run(payload) if path == "/api/run" else lab_module.offline_compare(payload))
         elif write and path == "/api/runs":
             if not self._limited(start=True):
-                self._json(201, lab.start(self._body()))
+                self._json(201, with_base(lab.start(self._body()), self._base()))
         else:
             match = _RUN_PATH.fullmatch(path)
             if not match or bool(match[2]) != write:
                 self._error(404, "API route not found. GET /llms.txt describes the public API.")
             elif not self._limited():
-                view = lab.submit(match[1], self._body().get("outputs")) if write else lab.get(match[1])
-                if view is None:
-                    self._error(404, "Unknown run. Runs are kept for 14 days.")
+                if write:
+                    view = lab.submit(match[1], self._body().get("outputs"))
                 else:
-                    self._json(200, view)
+                    work = parse_qs(query, max_num_fields=4).get("work", ["1"])[-1] != "0"
+                    view = lab.get(match[1], work=work)
+                if view is None:
+                    self._error(404, "Unknown run. " + RETENTION_TEXT)
+                else:
+                    self._write(200, json.dumps(with_base(view, self._base()), allow_nan=False).encode(), "application/json", noindex=True)
         return True
 
     def _access_request(self) -> None:
