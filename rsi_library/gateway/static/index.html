@@ -3,299 +3,195 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
   <meta name="referrer" content="no-referrer">
-  <meta name="description" content="Improve a prompt with an optimizer and keep the change only when a paired holdout test shows a significant gain.">
-  <title>RSI Library | Gateway Workbench</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b281e'/%3E%3Cpath d='M23 11a8 8 0 1 0 1 9M23 7v5h-5' fill='none' stroke='%23d9ee91' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <meta name="description" content="Run, fork and compare self-improvement loops for prompts. Works from this page, from an API, or from your AI assistant.">
+  <title>RSI Library</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317233b'/%3E%3Cpath d='M9 22V10l7 6 7-6v12' fill='none' stroke='%23f5f6f3' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%237f9bff'/%3E%3C/svg%3E">
+  <link rel="alternate" type="text/markdown" href="/llms.txt" title="Instructions for AI agents">
+  <link rel="stylesheet" href="/site.css">
+  <script src="/lab.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to workbench</a>
-  <header class="topbar">
-    <div class="shell topbar-inner">
-      <a class="brand" href="/">
-        <span class="brand-mark" aria-hidden="true">↺</span>
-        <span>RSI <strong>Library</strong></span>
-      </a>
-      <nav aria-label="Workbench">
-        <a href="#how">How it works</a>
-        <a href="#new-job">New job</a>
-        <a href="#workspace-jobs">Job history</a>
-        <a href="#request-key" id="nav-request">Request a key</a>
+  <a class="skip-link" href="#loops">Skip to the loops</a>
+  <header class="masthead">
+    <div class="wrap masthead-row">
+      <a class="wordmark" href="/">RSI Library</a>
+      <nav aria-label="Site">
+        <a href="#loops">Loops</a>
+        <a href="#assistant">Use it from your assistant</a>
+        <a href="/jobs">Hosted jobs</a>
+        <a href="https://github.com/abdulrahimiqbal/rsi-library" rel="noopener">Source</a>
       </nav>
-      <div class="session">
-        <span id="connection-status" class="connection-status">Disconnected</span>
-        <button id="disconnect" type="button" class="quiet" hidden>Disconnect</button>
-      </div>
     </div>
   </header>
 
-  <main class="shell" id="main">
-    <div class="hero">
-      <div>
-        <p class="eyebrow">RSI Library <span aria-hidden="true">/</span> Gateway</p>
-        <h1>Improve a prompt<span>.</span></h1>
-        <p>Let an optimizer revise your prompt using training cases. Keep the revision only if it beats the original on held-out cases by more than chance.</p>
-      </div>
-      <form id="connect-form" class="connect-form" autocomplete="off">
-        <label for="api-key">Workspace API key</label>
-        <div class="connect-row">
-          <input id="api-key" type="password" placeholder="Paste your API key" required spellcheck="false" autocapitalize="none" autocomplete="off">
-          <button id="connect" type="submit" class="primary">Connect</button>
-        </div>
-        <p class="hint">Your key stays in this tab until you disconnect or reload. <a href="#request-key" id="hero-request">No key? Request one.</a></p>
-      </form>
-      <div class="workspace-tag" id="workspace-tag" hidden>
-        <span class="eyebrow">Connected workspace</span>
-        <strong id="workspace-id"></strong>
-        <span id="workspace-role" class="hint"></span>
-      </div>
-    </div>
-    <p id="mode-banner" class="notice banner" hidden>Demo mode: jobs run on a simulated model, so they cost nothing and show how the workflow behaves rather than real model quality.</p>
-    <p id="session-message" class="notice" role="status"></p>
-
-    <section id="how" class="explainer" aria-labelledby="how-title">
-      <div class="section-heading">
-        <p class="eyebrow">How it works</p>
-        <h2 id="how-title">Three steps and one rule</h2>
-      </div>
-      <ol class="steps">
-        <li>
-          <strong>Bring a task</strong>
-          <span>A prompt or a two-to-four-step prompt chain, training cases, and at least <span data-policy="min_holdout_cases">8</span> holdout cases with the answers you expect.</span>
-        </li>
-        <li>
-          <strong>Optimize on training cases only</strong>
-          <span>Pick reflective search, archive evolution, or a self-revising improver, or let the gateway choose. Optimizers never see your holdout cases.</span>
-        </li>
-        <li>
-          <strong>Verify on holdout</strong>
-          <span>The gateway runs the original and the best revision on the same holdout cases and tests the paired difference. The revision replaces your prompt only if the gain is significant at the 5% level.</span>
-        </li>
-      </ol>
-      <p class="hint">Every job runs within your call, spend, and time limits, and every model call is recorded against them. A gain on a small holdout set may not reach significance; add cases or score each case several times to measure smaller gains.</p>
+  <main>
+    <section class="wrap intro">
+      <h1>Self-improvement loops you can run, fork and compare</h1>
+      <p>A loop proposes a change to a prompt, scores it on training cases, keeps what works, and checks the winner on cases it never saw. Pick one below and run it. No account needed.</p>
     </section>
 
-    <div class="workbench">
-      <section id="new-job" class="panel composer" aria-labelledby="new-title">
-        <div class="section-heading">
-          <p class="eyebrow">01 / Configure</p>
-          <h2 id="new-title">New improvement job</h2>
+    <section class="wrap bench" id="loops" aria-label="Loops">
+      <aside class="shelf" aria-label="Choose a loop">
+        <h2 class="shelf-title">Runs here, no model</h2>
+        <p class="shelf-note">Improves a small routing prompt on this server, so you can watch how each loop searches.</p>
+        <ul id="shelf-offline" class="shelf-list"></ul>
+        <h2 class="shelf-title">Improves your prompt</h2>
+        <p class="shelf-note">Your assistant or your own model key answers. The server runs the loop and the holdout check.</p>
+        <ul id="shelf-driven" class="shelf-list"></ul>
+      </aside>
+
+      <div class="sheet" id="sheet" aria-live="polite">
+        <div class="sheet-head">
+          <div>
+            <h2 id="loop-name">Loading loops…</h2>
+            <p id="loop-summary" class="lede"></p>
+          </div>
+          <a id="loop-source" class="source-link" rel="noopener" hidden>Method it is based on</a>
         </div>
-        <form id="job-form">
-          <fieldset id="job-fields" disabled>
-            <div class="form-grid">
-              <label>Artifact type
-                <select id="artifact-type">
-                  <option value="prompt">Prompt</option>
-                  <option value="prompt-chain">Prompt chain</option>
-                </select>
-              </label>
-              <label>Optimizer
-                <select id="method">
-                  <option value="auto">Auto route</option>
-                </select>
+
+        <ol class="parts" id="parts" aria-label="The loop's five parts"></ol>
+
+        <form id="offline-form" class="controls" hidden>
+          <div class="control-row">
+            <label>Versions to try
+              <input id="budget" type="number" min="2" max="100" step="1" value="24" required>
+            </label>
+            <label>Seed
+              <input id="seed" type="number" min="0" max="4294967295" step="1" value="13" required>
+            </label>
+            <div class="control-actions">
+              <button type="submit" class="primary" id="run-offline">Run loop</button>
+              <button type="button" id="compare-offline">Compare all three</button>
+            </div>
+          </div>
+          <details class="fold">
+            <summary>Use your own labelled cases</summary>
+            <p class="hint">A JSON object with <code>train</code> and <code>holdout</code> lists. Each case has <code>input</code> and <code>expected</code>. Leave it as is to use the support-ticket example.</p>
+            <textarea id="offline-task" rows="9" spellcheck="false" aria-label="Task as JSON"></textarea>
+            <button type="button" class="quiet" id="reset-task">Restore the example</button>
+          </details>
+          <p id="offline-message" class="notice" role="status"></p>
+        </form>
+
+        <form id="driven-form" class="controls" hidden>
+          <label>Prompt to improve
+            <textarea id="driven-prompt" rows="3" maxlength="4000" spellcheck="false" required></textarea>
+          </label>
+          <div class="pair">
+            <label>Training cases <span class="hint">JSON, the loop learns from these</span>
+              <textarea id="driven-train" rows="7" spellcheck="false" required></textarea>
+            </label>
+            <label>Holdout cases <span class="hint">JSON, at least 8, only for the final check</span>
+              <textarea id="driven-holdout" rows="7" spellcheck="false" required></textarea>
+            </label>
+          </div>
+          <div class="control-row">
+            <label>Revisions to try
+              <input id="driven-trials" type="number" min="1" max="10" step="1" value="3" required>
+            </label>
+            <label class="check"><input id="driven-all" type="checkbox"> Test all three loops on this task</label>
+          </div>
+
+          <fieldset class="who">
+            <legend>Who answers the model calls?</legend>
+            <label class="choice"><input type="radio" name="who" value="assistant" checked> My AI assistant</label>
+            <label class="choice"><input type="radio" name="who" value="key"> My OpenRouter key, in this browser</label>
+          </fieldset>
+
+          <div id="who-assistant" class="handoff">
+            <p>Copy this to your assistant. It carries your prompt and cases, and tells the assistant where to go.</p>
+            <pre id="handoff-text" tabindex="0"></pre>
+            <div class="control-actions">
+              <button type="button" class="primary" id="copy-handoff">Copy message</button>
+              <span id="handoff-note" class="hint" role="status"></span>
+            </div>
+          </div>
+
+          <div id="who-key" class="keyed" hidden>
+            <div class="pair">
+              <label>OpenRouter API key
+                <input id="or-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…">
               </label>
               <label>Model
-                <select id="model">
-                  <option value="">Connect to load models</option>
-                </select>
-              </label>
-              <label>Scoring
-                <select id="objective">
-                  <option value="normalized">Ignore case and spacing</option>
-                  <option value="exact">Exact match</option>
-                </select>
-              </label>
-              <label>Model provider retention
-                <select id="data-policy">
-                  <option value="any">Any configured provider</option>
-                  <option value="zero-retention">Require zero retention</option>
-                </select>
-              </label>
-              <label>Holdout tries per case
-                <select id="holdout-repeats">
-                  <option value="1">1 try</option>
-                  <option value="2">2 tries</option>
-                  <option value="3">3 tries</option>
-                  <option value="5">5 tries</option>
-                </select>
+                <input id="or-model" type="text" value="openai/gpt-4.1-mini" spellcheck="false">
               </label>
             </div>
-            <p id="method-description" class="hint"></p>
-            <label id="prompt-field">Starting prompt
-              <textarea id="prompt-text" rows="4" maxlength="4000" spellcheck="false"></textarea>
-            </label>
-            <label id="chain-field" hidden>Starting steps <span class="hint">(JSON)</span>
-              <textarea id="chain-steps" rows="5" maxlength="24000" spellcheck="false" aria-describedby="chain-hint"></textarea>
-              <span id="chain-hint" class="hint">Use two to four ordered steps with a name and prompt text.</span>
-            </label>
-            <label id="improver-field" hidden>Starting improver instructions <span class="hint">(optional)</span>
-              <textarea id="improver-text" rows="3" maxlength="4000" spellcheck="false"></textarea>
-            </label>
-            <details class="fixtures">
-              <summary>
-                <span>Training and holdout tests</span>
-                <span class="hint" id="fixture-counts"></span>
-              </summary>
-              <div class="fixture-inner">
-                <p class="hint">Optimizers see training examples. The final check uses the separate holdout set, which needs at least <span data-policy="min_holdout_cases">8</span> cases.</p>
-                <div class="form-grid">
-                  <label>Training cases <span class="hint">(JSON)</span>
-                    <textarea id="train" rows="7" maxlength="50000" spellcheck="false"></textarea>
-                  </label>
-                  <label>Holdout cases <span class="hint">(JSON)</span>
-                    <textarea id="holdout" rows="7" maxlength="50000" spellcheck="false"></textarea>
-                  </label>
-                </div>
-                <button id="load-example" class="quiet" type="button">Restore example</button>
-              </div>
-            </details>
-            <fieldset class="budget">
-              <legend>Job limits</legend>
-              <div class="form-grid budget-grid">
-                <label>Candidate trials
-                  <input id="max-trials" type="number" inputmode="numeric" min="1" max="50" step="1" value="3" required>
-                </label>
-                <label>Model calls
-                  <input id="max-calls" type="number" inputmode="numeric" min="1" max="1000" step="1" value="60" required>
-                </label>
-                <label>Spend cap (USD)
-                  <input id="max-cost" type="text" inputmode="decimal" value="1.00" required>
-                </label>
-                <label>Time limit (seconds)
-                  <input id="max-seconds" type="number" inputmode="numeric" min="1" max="3600" step="1" value="240" required>
-                </label>
-              </div>
-              <p class="hint" id="budget-hint">The model call limit covers proposals and scoring.</p>
-            </fieldset>
-          </fieldset>
-          <div class="actions">
-            <button id="submit-job" class="primary" type="submit" disabled>Queue job <span aria-hidden="true">↗</span></button>
-            <span id="submit-hint" class="hint">Connect with a workspace key to start a job.</span>
+            <p class="hint">Your key goes from this tab straight to OpenRouter and is never sent to RSI Library. Model calls are billed to your OpenRouter account.</p>
+            <div class="control-actions">
+              <button type="submit" class="primary" id="run-driven">Run loop</button>
+              <button type="button" id="stop-driven" hidden>Stop</button>
+            </div>
           </div>
-          <p id="job-message" class="notice" role="status"></p>
+          <p id="driven-message" class="notice" role="status"></p>
         </form>
-      </section>
 
-      <div class="results-stack" id="workspace-jobs">
-        <section class="panel history" aria-labelledby="history-title">
-          <div class="section-heading section-row">
-            <div>
-              <p class="eyebrow">02 / Track</p>
-              <h2 id="history-title">Job history</h2>
-            </div>
-            <button id="refresh-jobs" type="button" class="quiet" disabled>Refresh</button>
+        <div id="outcome" class="outcome" hidden>
+          <p id="headline" class="headline"></p>
+          <div class="plot-frame">
+            <svg id="plot" class="plot" viewBox="0 0 720 300" role="img" aria-labelledby="plot-title">
+              <title id="plot-title">Score of each version tried</title>
+            </svg>
+            <ul class="legend" id="legend"></ul>
           </div>
-          <p id="history-empty" class="empty">Connect to view jobs saved in your workspace.</p>
-          <ul id="jobs" class="job-list" aria-label="Saved jobs"></ul>
-        </section>
-        <section class="panel detail" aria-labelledby="detail-title">
-          <div class="section-heading">
-            <p class="eyebrow">03 / Inspect</p>
-            <h2 id="detail-title">Job details</h2>
+          <div id="verdicts" class="verdicts"></div>
+          <div class="inspect">
+            <div class="inspect-list">
+              <h3>Versions tried</h3>
+              <ol id="versions" class="versions"></ol>
+            </div>
+            <div class="inspect-detail">
+              <h3 id="version-title">Version</h3>
+              <p id="version-meta" class="hint"></p>
+              <pre id="version-text" tabindex="0"></pre>
+            </div>
           </div>
-          <p id="detail-empty" class="empty">Select a job to see its status, usage, and results.</p>
-          <div id="detail-content" hidden>
-            <div class="detail-meta">
-              <span id="job-id" class="job-id"></span>
-              <span id="job-state" class="state-chip"></span>
-            </div>
-            <p id="job-method" class="hint"></p>
-            <dl id="usage" class="metric-grid" aria-label="Job usage"></dl>
-            <p id="uncertain-note" class="hint" hidden>Uncertain spend is reserved until the provider’s charge can be confirmed.</p>
-            <p id="run-error" class="notice error" hidden></p>
-            <p id="run-progress" class="hint" hidden></p>
-            <div id="result" hidden>
-              <p id="decision" class="decision"></p>
-              <dl id="scores" class="metric-grid" aria-label="Holdout scores"></dl>
-              <p id="holdout-size" class="hint" hidden></p>
-              <details id="artifact-output" class="output" open>
-                <summary id="artifact-title">Returned artifact</summary>
-                <pre id="artifact"></pre>
-              </details>
-              <details id="candidate-output" class="output" hidden>
-                <summary>Proposed candidate, not adopted</summary>
-                <pre id="candidate"></pre>
-              </details>
-              <details id="trials" class="output" hidden>
-                <summary>Trials</summary>
-                <pre id="trial-data"></pre>
-              </details>
-              <details id="routing" class="output" hidden>
-                <summary>Routing</summary>
-                <pre id="routing-data"></pre>
-              </details>
-            </div>
-            <div class="actions detail-actions">
-              <button id="cancel-job" type="button" class="quiet danger" hidden>Request cancellation</button>
-              <button id="download-artifact" type="button" class="quiet" hidden>Download artifact</button>
-              <button id="download-run" type="button" class="quiet" hidden>Download run JSON</button>
-            </div>
-            <p id="detail-message" class="notice" role="status"></p>
-          </div>
-        </section>
-      </div>
-    </div>
-
-    <section id="operator" class="panel operator" aria-labelledby="operator-title" hidden>
-      <div class="section-heading section-row">
-        <div>
-          <p class="eyebrow">Operator</p>
-          <h2 id="operator-title">Access requests</h2>
+          <details class="fold">
+            <summary>Do the same from a script</summary>
+            <pre id="api-call" tabindex="0"></pre>
+          </details>
         </div>
-        <button id="refresh-requests" type="button" class="quiet">Refresh</button>
       </div>
-      <p id="site-usage" class="hint"></p>
-      <p id="requests-empty" class="empty">No pending requests.</p>
-      <ul id="requests" class="request-list" aria-label="Pending access requests"></ul>
-      <div id="issued" class="issued" hidden>
-        <p class="eyebrow">New key, shown once</p>
-        <p id="issued-for" class="hint"></p>
-        <div class="connect-row">
-          <input id="issued-token" type="text" readonly spellcheck="false" aria-label="New workspace key">
-          <button id="copy-token" type="button">Copy</button>
-        </div>
-        <p class="hint">Send it to the requester directly. It can’t be shown again; revoke it and approve a new request if it is lost.</p>
-      </div>
-      <p id="operator-message" class="notice" role="status"></p>
     </section>
 
-    <section id="request-key" class="panel request" aria-labelledby="request-title">
-      <div class="section-heading">
-        <p class="eyebrow">Get access</p>
-        <h2 id="request-title">Request a workspace key</h2>
+    <section class="wrap assistant" id="assistant">
+      <div class="assistant-copy">
+        <h2>Use it from your assistant</h2>
+        <p>Everything on this page is also an API, written for AI agents. Tell your assistant what you want in plain words and let it do the runs.</p>
+        <ul class="asks">
+          <li><button type="button" class="ask" data-ask="Go to {origin}/llms.txt and follow it. Run the archive-prompt loop with a budget of 30 versions and tell me how the winning prompt differs from the starting one.">“Run the archive loop with a budget of 30 and tell me what changed.”</button></li>
+          <li><button type="button" class="ask" data-ask="Go to {origin}/llms.txt and follow it. Compare all the no-model loops on the built-in task at the same budget and seed, and tell me which one I should use and why.">“Compare all the loops and tell me which one to use.”</button></li>
+          <li><button type="button" class="ask" data-ask="Go to {origin}/llms.txt and follow it. Improve the prompt I give you next by testing every loop on it with my labelled cases, then tell me exactly which prompt to adopt, with the holdout scores and p-value.">“Test every loop on my prompt and tell me exactly what to change.”</button></li>
+        </ul>
+        <p id="ask-note" class="hint" role="status">Select a request to copy a ready-made message.</p>
       </div>
-      <p id="requests-closed" class="empty" hidden>Access requests are closed right now.</p>
-      <form id="access-form" autocomplete="on">
-        <div class="form-grid">
-          <label>Email
-            <input id="access-email" type="email" required maxlength="254" autocomplete="email">
-          </label>
-          <label>Name <span class="hint">(optional)</span>
-            <input id="access-name" type="text" maxlength="120" autocomplete="name">
-          </label>
+      <div class="assistant-how">
+        <h3>Connect it once</h3>
+        <p>If your assistant supports connectors, add this address as a custom connector. It needs no sign-in.</p>
+        <div class="copy-line">
+          <code id="mcp-url"></code>
+          <button type="button" id="copy-mcp">Copy</button>
         </div>
-        <label>What would you like to improve?
-          <textarea id="access-use" rows="3" minlength="10" maxlength="2000" required></textarea>
-        </label>
-        <label class="trap" aria-hidden="true">Website
-          <input id="access-website" type="text" tabindex="-1" autocomplete="off">
-        </label>
-        <div class="actions">
-          <button id="access-submit" class="primary" type="submit">Request a key</button>
-          <span class="hint">We use your email only to reply about access.</span>
+        <h3>Or let it read the instructions</h3>
+        <p>Assistants that can make web requests only need this page. It explains every loop and call.</p>
+        <div class="copy-line">
+          <code id="guide-url"></code>
+          <a id="guide-link" href="/llms.txt">Open</a>
         </div>
-        <p id="access-message" class="notice" role="status"></p>
-      </form>
+        <h3>What the assistant does</h3>
+        <ol class="flow">
+          <li>Reads the list of loops and picks the one you named.</li>
+          <li>Starts a run with your prompt and labelled cases.</li>
+          <li>Answers the work the server hands it: score this prompt on these inputs, propose a revision.</li>
+          <li>Gets the verdict from the holdout check and reports it to you.</li>
+        </ol>
+      </div>
     </section>
   </main>
 
-  <footer class="shell footer">
-    <span>RSI Library Gateway</span>
-    <span>Persistent jobs <span aria-hidden="true">·</span> Holdout evidence <span aria-hidden="true">·</span> Metered execution <span aria-hidden="true">·</span> <a href="https://github.com/abdulrahimiqbal/rsi-library" rel="noopener">Source</a></span>
+  <footer class="wrap foot">
+    <span>RSI Library</span>
+    <span>Runs started here are kept for 14 days. <a href="/llms.txt">Agent instructions</a>, <a href="/api/catalog">loop catalog</a>, <a href="/jobs">hosted jobs</a>.</span>
   </footer>
 </body>
 </html>

@@ -7,6 +7,30 @@ It has two parts:
 - **The gateway** ([rsilibrary.xyz](https://rsilibrary.xyz)) runs metered improvement jobs on real models. You bring a prompt or a short prompt chain, training cases, and holdout cases. An optimizer revises the prompt using the training cases only. The gateway then scores the original and the best revision on the same holdout cases and runs a paired significance test. The revision replaces your prompt only when the gain is significant.
 - **The loop library and workbench** describe every improvement method as the same loop with swappable parts: the **target** being changed, the **proposer** that edits it, the **judge** that scores it, the **search** that picks which trial to build on, and the **harness** that runs the tests. The gateway's optimizers are loops on this engine.
 
+## Use it from your assistant
+
+Everything on [rsilibrary.xyz](https://rsilibrary.xyz) works without an account, for people and for AI agents.
+
+- **Tell your assistant in plain words.** "Go to rsilibrary.xyz/llms.txt and follow it. Test every loop on my prompt with these cases and tell me exactly what to change." The page at `/llms.txt` explains every loop and call.
+- **Or connect it once.** Add `https://rsilibrary.xyz/mcp` as a custom connector (remote MCP server, no sign-in). It offers `list_loops`, `run_offline_loop`, `compare_offline_loops`, `start_prompt_run`, `submit_work` and `get_run`.
+
+There are two kinds of loop:
+
+| Kind | Loops | Who does the thinking |
+| --- | --- | --- |
+| No model | `greedy-prompt`, `archive-prompt`, `adaptive-improver` | Nobody: they improve a small routing prompt for a built-in interpreter, on the server, instantly. |
+| Your prompt | `reflect-v1`, `evolve-v1`, `self-revise-v1` | The caller. The server runs the loop and hands out work items ("answer this prompt for this input", "propose a revision"). Your assistant, or your own OpenRouter key in the browser, answers them. The server scores the answers, keeps the holdout labels, and applies the acceptance rule below. |
+
+```sh
+curl -s https://rsilibrary.xyz/api/catalog                      # every loop and its parts
+curl -s "https://rsilibrary.xyz/api/run?loop=archive-prompt&budget=30"
+curl -s "https://rsilibrary.xyz/api/compare?loops=all"
+curl -s https://rsilibrary.xyz/api/runs -H 'Content-Type: application/json' \
+  -d '{"loops": "all", "prompt": "…", "task": {"train": […], "holdout": […]}}'
+```
+
+A run started with `POST /api/runs` replies with work items. Answer them and post the answers to `/api/runs/{id}/work` until its state is `done`; the result has a verdict for each loop and a recommendation. Runs are kept for 14 days and are reachable only by their ID.
+
 ## The acceptance rule
 
 Every gateway job ends with evidence, not just a score:
@@ -18,9 +42,9 @@ Every gateway job ends with evidence, not just a score:
 
 Jobs need at least 8 holdout cases, because with fewer even a perfect sweep can't reach significance. More cases detect smaller gains. With `holdout_repeats`, each case is scored 2–5 times and the tries are averaged, which helps with models that answer inconsistently.
 
-## Use the gateway
+## Use hosted jobs
 
-Request a workspace key at [rsilibrary.xyz](https://rsilibrary.xyz), connect with it, and queue a job from the workbench. Scripts and agents can use the same API:
+Hosted jobs run on the gateway's own models and need a workspace key. Request one at [rsilibrary.xyz/jobs](https://rsilibrary.xyz/jobs), connect with it, and queue a job from the workbench. Scripts and agents can use the same API:
 
 ```sh
 curl https://rsilibrary.xyz/v1/jobs \

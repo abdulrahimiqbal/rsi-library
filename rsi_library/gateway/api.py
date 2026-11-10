@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
+from . import lab as lab_module, mcp
+from .lab import Lab
 from .methods import catalog as method_catalog, evidence_policy, validate_request
 from .providers import Model
 from .routing import Adapter, choose
@@ -20,9 +22,15 @@ from .store import MAX_COST_MICROUSD, Conflict, Store, StoreError
 
 _ASSETS = {
     "/": ("index.html", "text/html"),
-    "/app.js": ("app.js", "text/javascript"),
-    "/styles.css": ("styles.css", "text/css"),
+    "/jobs": ("jobs.html", "text/html"),
+    "/site.css": ("site.css", "text/css"),
+    "/lab.js": ("lab.js", "text/javascript"),
+    "/jobs.js": ("jobs.js", "text/javascript"),
 }
+_FONT_PATH = re.compile(r"/fonts/([a-z0-9-]{1,64}\.woff2)")
+_RUN_PATH = re.compile(r"/api/runs/(run_[A-Za-z0-9_-]{16,40})(/work)?")
+_HOST = re.compile(r"[A-Za-z0-9.-]{1,253}(:\d{1,5})?")
+_GUIDE_PATHS = {"/llms.txt", "/agents.md", "/AGENTS.md"}
 _JOB_PATH = re.compile(r"/v1/jobs/(job_[a-f0-9]{32})(/cancel)?")
 _REQUEST_PATH = re.compile(r"/v1/operator/access-requests/(req_[a-f0-9]{32})/(approve|decline)")
 _IDEMPOTENCY = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -89,6 +97,10 @@ class Gateway(ThreadingHTTPServer):
         self.trust_proxy = trust_proxy
         self.default_spend_microusd = default_spend_microusd
         self.request_limit = _RateLimit(per_client=3, total=60, window_seconds=3600)
+        # Public loops: generous for stepping through a run, tighter for starting new ones.
+        self.lab = Lab(store.path.with_name("lab.db"))
+        self.lab_limit = _RateLimit(per_client=1500, total=30_000, window_seconds=3600)
+        self.lab_start_limit = _RateLimit(per_client=40, total=1500, window_seconds=3600)
         self.slots = threading.BoundedSemaphore(_LIMIT)
         super().__init__((host, port), Handler)
 
@@ -126,17 +138,20 @@ class Handler(BaseHTTPRequestHandler):
         # Avoid logging request URLs, credentials, or submitted artifacts.
         pass
 
-    def _write(self, status: int, data: bytes, media_type: str) -> None:
+    def _write(self, status: int, data: bytes, media_type: str, *, cache: str = "no-store") -> None:
         self.send_response(status)
-        self.send_header("Content-Type", media_type + "; charset=utf-8")
+        self.send_header("Content-Type", media_type if media_type.startswith("font/") else media_type + "; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        # The homepage can call OpenRouter directly with a key that stays in the visitor's browser.
         self.send_header("Content-Security-Policy", (
-            "default-src 'self'; img-src 'self' data:; base-uri 'none'; "
+            "default-src 'self'; connect-src 'self' https://openrouter.ai; img-src 'self' data:; base-uri 'none'; "
             "frame-ancestors 'none'; object-src 'none'; form-action 'self'"
         ))
+        if self._open_api():
+            self.send_header("Access-Control-Allow-Origin", "*")
         if status == 401:
             self.send_header("WWW-Authenticate", "Bearer")
         self.end_headers()
@@ -173,7 +188,19 @@ class Handler(BaseHTTPRequestHandler):
     def _operator(self, identity: dict) -> bool:
         return self.server.operator_workspace is not None and identity["workspace_id"] == self.server.operator_workspace
 
-    def _body(self, limit: int = _MAX_BODY) -> dict:
+    def _open_api(self) -> bool:
+        # Keyless routes carry no credentials, so any origin may read them.
+        path = urlsplit(self.path).path
+        return path.startswith("/api/") or path == "/mcp" or path in _GUIDE_PATHS
+
+    def _base(self) -> str:
+        host = self.headers.get("Host", "")
+        if not _HOST.fullmatch(host):
+            host = f"127.0.0.1:{self.server.server_port}"
+        secure = self.server.trust_proxy and self.headers.get("X-Forwarded-Proto", "https").split(",")[0].strip() == "https"
+        return f"{'https' if secure else 'http'}://{host}"
+
+    def _raw_json(self, limit: int = _MAX_BODY) -> object:
         lengths = self.headers.get_all("Content-Length", [])
         if len(lengths) != 1 or not lengths[0].isdigit() or self.headers.get("Transfer-Encoding"):
             raise ValueError("Provide a valid JSON content length.")
@@ -181,11 +208,29 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= limit:
             raise ValueError(f"The JSON request must be smaller than {limit // 1024} KiB.")
         if self.headers.get_content_type() != "application/json":
-            raise ValueError("Send the job as application/json.")
-        payload = json.loads(self.rfile.read(length))
+            raise ValueError("Send the request as application/json.")
+        return json.loads(self.rfile.read(length))
+
+    def _body(self, limit: int = _MAX_BODY) -> dict:
+        payload = self._raw_json(limit)
         if not isinstance(payload, dict):
-            raise ValueError("Send the job as a JSON object.")
+            raise ValueError("Send the request as a JSON object.")
         return payload
+
+    def do_OPTIONS(self) -> None:
+        if not self._open_api():
+            self._error(404, "Route not found.")
+            return
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Protocol-Version, Mcp-Session-Id")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_DELETE(self) -> None:
+        self._error(405, "This route does not support DELETE.")
 
     def do_GET(self) -> None:
         self._handle(write=False)
@@ -234,8 +279,10 @@ class Handler(BaseHTTPRequestHandler):
         if write and path == "/access-requests":
             self._access_request()
             return
+        if self._public(path, url.query, write=write):
+            return
         if not path.startswith("/v1/"):
-            self._error(404, "Route not found.")
+            self._error(404, "Route not found. GET /llms.txt describes the public API.")
             return
         identity = self._identity(write)
         if identity is None:
@@ -282,6 +329,89 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, job)
                 return
         self._error(404, "Job or route not found.")
+
+    def _limited(self, start: bool = False) -> bool:
+        client = self._client()
+        if (start and not self.server.lab_start_limit.allow(client)) or not self.server.lab_limit.allow(client):
+            self._error(429, "Too many requests from this network. Wait a while and try again.")
+            return True
+        return False
+
+    @staticmethod
+    def _query(query: str) -> dict:
+        """Turn ?loop=a&budget=24 into the same object a POST body would carry."""
+        payload: dict = {}
+        for key, values in parse_qs(query, max_num_fields=12).items():
+            value = values[-1]
+            if key in ("budget", "seed"):
+                if not value.isdigit() or len(value) > 10:
+                    raise ValueError(f"{key} must be a whole number.")
+                payload[key] = int(value)
+            elif key == "loops":
+                payload[key] = "all" if value == "all" else [item for item in value.split(",") if item]
+            elif key in ("loop", "target", "proposer", "judge", "search", "harness"):
+                payload[key] = value
+            else:
+                raise ValueError(f"Unknown query field {key[:40]!r}. Use POST with JSON for tasks and settings.")
+        return payload
+
+    def _public(self, path: str, query: str, *, write: bool) -> bool:
+        """Serve the keyless loop routes. Returns False when the path is not one of them."""
+        lab = self.server.lab
+        font = _FONT_PATH.fullmatch(path)
+        if not write and font:
+            file = files("rsi_library.gateway").joinpath("static").joinpath("fonts").joinpath(font[1])
+            if not file.is_file():
+                self._error(404, "Font not found.")
+            else:
+                self._write(200, file.read_bytes(), "font/woff2", cache="public, max-age=2592000, immutable")
+            return True
+        if not write and path in _GUIDE_PATHS:
+            self._write(200, lab_module.agent_guide(self._base()).encode(), "text/markdown")
+            return True
+        if path == "/mcp":
+            if not write:
+                self.send_response(405)
+                self.send_header("Allow", "POST, OPTIONS")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return True
+            if self._limited():
+                return True
+
+            def allow(tool: str) -> bool:
+                return tool != "start_prompt_run" or self.server.lab_start_limit.allow(self._client())
+
+            reply = mcp.handle(self._raw_json(), lab, allow)
+            if reply is None:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._write(200, json.dumps(reply, allow_nan=False).encode(), "application/json")
+            return True
+        if not path.startswith("/api/"):
+            return False
+        if not write and path == "/api/catalog":
+            self._json(200, {**lab_module.catalog(), "guide": self._base() + "/llms.txt", "mcp": self._base() + "/mcp"})
+        elif path in ("/api/run", "/api/compare"):
+            if not self._limited():
+                payload = self._body() if write else self._query(query)
+                self._json(200, lab_module.offline_run(payload) if path == "/api/run" else lab_module.offline_compare(payload))
+        elif write and path == "/api/runs":
+            if not self._limited(start=True):
+                self._json(201, lab.start(self._body()))
+        else:
+            match = _RUN_PATH.fullmatch(path)
+            if not match or bool(match[2]) != write:
+                self._error(404, "API route not found. GET /llms.txt describes the public API.")
+            elif not self._limited():
+                view = lab.submit(match[1], self._body().get("outputs")) if write else lab.get(match[1])
+                if view is None:
+                    self._error(404, "Unknown run. Runs are kept for 14 days.")
+                else:
+                    self._json(200, view)
+        return True
 
     def _access_request(self) -> None:
         if not self.server.access_requests:

@@ -194,7 +194,7 @@ function updateFixtureSummary() {
     const holdout = parseList("holdout", "Holdout cases").length;
     const repeats = Number(el("holdout-repeats").value) || 1;
     const short = holdout < policy.min_holdout_cases;
-    el("fixture-counts").textContent = `${train} train · ${holdout} holdout${short ? ` · needs ${policy.min_holdout_cases}+` : ""}`;
+    el("fixture-counts").textContent = `${train} training, ${holdout} holdout${short ? `, needs ${policy.min_holdout_cases} or more` : ""}`;
     el("fixture-counts").classList.toggle("warning", short);
     const steps = el("artifact-type").value === "prompt-chain" ? parseList("chain-steps", "Starting steps").length : 1;
     const minimumCalls = 2 * train * steps + 1 + 2 * holdout * steps * repeats;
@@ -761,7 +761,6 @@ async function loadInfo() {
     const open = info.access_requests === true;
     el("access-form").hidden = !open;
     el("requests-closed").hidden = open;
-    el("nav-request").hidden = !open;
     el("hero-request").hidden = !open;
     applyPolicy(info.evidence_policy);
   } catch {

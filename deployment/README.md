@@ -83,6 +83,10 @@ Set `data_policy` to `zero-retention` to filter for providers marked that way in
 
 Built-in artifacts include prompts and two-to-four-step prompt chains. The self-revising method can change its text improver, which descendants use to propose revisions. Every built-in optimizer is a loop on the shared engine in `rsi_library/engine.py`, with the same artifact target, training harness, and judge, and its own search and proposer. The fixture harness sends test inputs to the configured model for inference. Verify that provider data handling matches the pilot workspace's requirements.
 
+## Public loops
+
+The homepage, `/llms.txt`, `/api/*` and `/mcp` need no key. They serve the offline loops and runs driven by the caller's own model, described in the [project README](../README.md). They never call the gateway's models and never spend its budget. Driven runs are stored in `lab.db` beside the gateway database, kept for 14 days, and capped at 5,000 runs. Each network may start 40 runs and make 1,500 requests an hour. The homepage lets a visitor use their own OpenRouter key; the browser sends it straight to OpenRouter, so the content security policy allows connections to `openrouter.ai` and the key never reaches this server. Hosted jobs moved to `/jobs`.
+
 ## Access requests and the operator
 
 Visitors can request a key from the homepage. Requests are rate limited per network, screened with a hidden form field, and answered the same way for every address. The gateway stores the email, optional name, and description until you decide.

@@ -19,4 +19,4 @@ include = ["rsi_library*"]
 
 [tool.setuptools.package-data]
 rsi_library = ["static/*"]
-"rsi_library.gateway" = ["static/*"]
+"rsi_library.gateway" = ["static/*", "static/fonts/*"]
