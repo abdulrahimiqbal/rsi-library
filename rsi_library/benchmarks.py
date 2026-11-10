@@ -239,11 +239,29 @@ def results() -> dict:
     return json.loads(_stored())
 
 
+def _driven(path: str) -> dict:
+    """Live-model results written by examples/lab_benchmark.py, in the shape the site shows."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if data.get("status") != "measured" or not isinstance(data.get("loops"), dict):
+        raise SystemExit(f"{path} is not output from examples/lab_benchmark.py.")
+    return {
+        **DRIVEN, "status": "measured",
+        "note": "Measured on a live model; results with another model will differ.",
+        **{key: data[key] for key in ("model", "date", "start_prompt", "tasks", "max_trials", "seeds", "loops")},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Measure the offline loops on the benchmark tasks.")
     parser.add_argument("--write", action="store_true", help=f"rewrite rsi_library/{RESULTS_FILE}")
+    parser.add_argument("--driven", help="also publish live-model results written by examples/lab_benchmark.py")
     args = parser.parse_args(argv)
     data = measure()
+    if args.driven:
+        data["driven"] = _driven(args.driven)
+    elif results().get("driven", {}).get("status") == "measured":
+        # Regenerating the offline numbers keeps live-model results already published.
+        data["driven"] = results()["driven"]
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     if args.write:
         Path(__file__).with_name(RESULTS_FILE).write_text(text, encoding="utf-8")

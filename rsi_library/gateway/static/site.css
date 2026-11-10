@@ -76,6 +76,13 @@ button.primary:hover:not(:disabled) { background: var(--cobalt); border-color: v
 button.quiet { border-color: transparent; background: transparent; color: var(--soft); padding-inline: 8px; }
 button.quiet:hover:not(:disabled) { color: var(--ink); border-color: var(--rule-strong); }
 button.danger { color: var(--brick); }
+button.danger:hover:not(:disabled) { border-color: var(--brick); }
+a.button { display: inline-flex; align-items: center; min-height: 38px; padding: 7px 14px; border: 1px solid var(--rule-strong); border-radius: 7px; background: var(--sheet); color: var(--ink); font-weight: 600; font-size: .94rem; text-decoration: none; }
+a.button:hover { border-color: var(--ink); }
+a.button.quiet { border-color: transparent; background: transparent; color: var(--soft); padding-inline: 8px; }
+a.button.quiet:hover { color: var(--ink); border-color: var(--rule-strong); }
+button.link { min-height: 0; padding: 0; border: 0; background: none; color: var(--cobalt); font: inherit; font-weight: 650; text-align: left; text-decoration: underline; text-underline-offset: .18em; }
+button.link:hover:not(:disabled) { color: var(--ink); }
 label { display: block; font-size: .9rem; font-weight: 600; }
 input, select, textarea { display: block; width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--rule-strong); border-radius: 7px; background: var(--sheet); font-weight: 400; }
 label > input, label > select, label > textarea { margin-top: 5px; }
@@ -200,10 +207,36 @@ pre { font: .84rem/1.55 var(--code); white-space: pre-wrap; overflow-wrap: anywh
 .tag-improved { background: var(--moss-wash); color: var(--moss); border-color: transparent; }
 .tag-inconclusive { background: var(--amber-wash); color: var(--amber); border-color: transparent; }
 .tag-not_improved { color: var(--soft); }
+.tag-working { background: var(--cobalt-wash); color: var(--cobalt); border-color: transparent; }
 .adopt { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--rule-strong); border-radius: 10px; background: var(--paper); }
 .adopt.confirmed { border-color: var(--moss); background: var(--moss-wash); }
 .adopt h3 { font: 650 1rem var(--display); }
 .adopt pre { background: var(--sheet); border-color: transparent; }
+.verdicts .sheet { grid-template-columns: 96px minmax(0, 1fr); padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; }
+.inspector pre.artifact { padding: 10px 12px; border-radius: 8px; background: var(--paper); border: 1px solid var(--rule); max-height: 260px; overflow: auto; }
+
+/* Measured results */
+.measured { padding-top: 64px; }
+.measured h2 { font: 650 clamp(1.6rem, 3vw, 2.2rem)/1.1 var(--display); letter-spacing: -.03em; }
+.measured .lede { margin-top: 10px; }
+.bench { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: .92rem; background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+.bench th, .bench td { text-align: left; vertical-align: top; padding: 10px 14px; border-top: 1px solid var(--rule); }
+.bench thead th { border-top: 0; color: var(--soft); font-weight: 500; font-size: .84rem; background: #fafbf9; }
+.bench tbody th { font-weight: 600; }
+.bench .num { text-align: right; font-variant-numeric: tabular-nums; }
+.bench td strong { display: block; font: 650 1.05rem var(--display); }
+.bench .sub { display: block; color: var(--soft); font-size: .8rem; font-weight: 400; }
+.bench .lead { background: var(--moss-wash); }
+.bench .lead strong { color: var(--moss); }
+#bench-tasks { margin-top: 14px; }
+#bench-tasks .bench { margin-top: 6px; }
+#bench-note { margin-top: 12px; max-width: 80ch; }
+.card-measured { color: var(--soft); font-size: .86rem; padding: 8px 10px; border-radius: 8px; background: var(--paper); }
+
+/* Missing page */
+.missing { padding-block: 72px 96px; max-width: 64ch; }
+.missing h1 { font: 650 clamp(1.8rem, 4vw, 2.6rem)/1.1 var(--display); letter-spacing: -.03em; }
+.missing p { margin-top: 14px; color: var(--soft); }
 
 /* Gallery */
 .gallery { padding-top: 64px; }
@@ -342,6 +375,7 @@ pre { font: .84rem/1.55 var(--code); white-space: pre-wrap; overflow-wrap: anywh
   .wide { width: calc(100% - 28px); }
   .studio { grid-template-columns: minmax(0, 1fr); }
   .templates { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .studio[data-mode="run"] .templates, .studio[data-mode="method"] .templates { display: none; }
   .template-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   .stage { padding: 18px 16px 20px; }
   .insights { grid-template-columns: minmax(0, 1fr); }

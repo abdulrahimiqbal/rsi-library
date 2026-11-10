@@ -4,8 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta name="description" content="Build a self-improvement loop on a canvas: pick a template, change a part, and watch it run. Works for people and for AI assistants.">
+  <meta name="description" content="Self-improvement loops you can run and check: pick a loop, change any part, and test whether the new version of your prompt or function really beats the old one. Works for people and for AI assistants.">
   <title>RSI Library</title>
+  <link rel="canonical" href="https://rsilibrary.xyz/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="RSI Library">
+  <meta property="og:title" content="RSI Library: self-improvement loops you can run and check">
+  <meta property="og:description" content="Change any part of a loop, run it, and test whether the new version really wins. Prompts, prompt chains and functions; for people and for AI assistants.">
+  <meta property="og:url" content="https://rsilibrary.xyz/">
+  <meta property="og:image" content="https://rsilibrary.xyz/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="A loop drawn as five parts around a held-back score of 92 percent.">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317233b'/%3E%3Cpath d='M9 22V10l7 6 7-6v12' fill='none' stroke='%23f5f6f3' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%237f9bff'/%3E%3C/svg%3E">
   <link rel="alternate" type="text/markdown" href="/llms.txt" title="Instructions for AI agents">
   <link rel="stylesheet" href="/site.css">
@@ -17,9 +28,10 @@
     <div class="wide masthead-row">
       <a class="wordmark" href="/">RSI Library</a>
       <nav aria-label="Site">
-        <a href="#canvas">Canvas</a>
-        <a href="#gallery">Gallery</a>
-        <a href="#assistant">For assistants</a>
+        <a href="/#canvas">Canvas</a>
+        <a href="/#measured">Measured</a>
+        <a href="/#gallery">Gallery</a>
+        <a href="/#assistant">For assistants</a>
         <a href="/jobs">Hosted jobs</a>
         <a href="https://github.com/abdulrahimiqbal/rsi-library" rel="noopener">Source</a>
       </nav>
@@ -27,13 +39,15 @@
   </header>
 
   <main>
-    <section class="wide studio" aria-label="Loop canvas">
+    <section class="wide studio" id="studio" aria-label="Loop canvas" data-mode="loop">
       <aside class="templates" aria-label="Templates">
         <h2>Templates</h2>
         <h3>Run here, no model</h3>
         <ul id="templates-offline" class="template-list"></ul>
         <h3>Improve your prompt</h3>
         <ul id="templates-driven" class="template-list"></ul>
+        <h3>Improve a function</h3>
+        <ul id="templates-code" class="template-list"></ul>
         <p class="hint">A template is a starting loop. Load one, then change any part on the canvas.</p>
       </aside>
 
@@ -62,6 +76,22 @@
             <button type="button" class="quiet" id="share">Copy link to this setup</button>
           </div>
         </form>
+        <div id="runbar" class="toolbar" hidden>
+          <div class="toolbar-actions">
+            <button type="button" class="primary" id="run-continue">Continue with my OpenRouter key</button>
+            <button type="button" id="run-stop" hidden>Stop</button>
+            <button type="button" id="run-copy">Copy link to this run</button>
+            <button type="button" class="danger" id="run-delete">Delete this run</button>
+            <a class="button quiet" id="run-new" href="/">Start a new run</a>
+          </div>
+        </div>
+        <div id="methodbar" class="toolbar" hidden>
+          <div class="toolbar-actions">
+            <button type="button" class="primary" id="method-run">Run the closest loop</button>
+            <a class="button" id="method-paper" rel="noopener" href="/">Read the paper</a>
+            <button type="button" class="quiet" id="method-back">Back to the templates</button>
+          </div>
+        </div>
         <p id="stage-message" class="notice" role="status"></p>
 
         <div class="canvas" id="canvas">
@@ -78,7 +108,7 @@
       </div>
 
       <aside class="insights" aria-label="Live run">
-        <h2>Live run</h2>
+        <h2 id="insights-title">Live run</h2>
         <p id="headline" class="headline">Run the loop to see how it searches.</p>
         <dl class="stats" id="stats"></dl>
         <div id="verdicts" class="verdicts" hidden></div>
@@ -95,9 +125,21 @@
       </aside>
     </section>
 
+    <section class="wide measured" id="measured">
+      <h2>Measured, not claimed</h2>
+      <p class="lede" id="measured-lede">Loading the results…</p>
+      <div class="table-scroll"><table class="bench" id="bench-table"></table></div>
+      <details class="fold" id="bench-tasks">
+        <summary>Results by task</summary>
+        <div class="table-scroll"><table class="bench" id="bench-task-table"></table></div>
+      </details>
+      <p class="hint" id="bench-note"></p>
+    </section>
+
     <section class="wide gallery" id="gallery">
       <h2>Gallery of self-improvement loops</h2>
-      <p class="lede">Published methods and the loops you can run here, each described by the same five parts so you can compare them directly. Pick two to see exactly where they differ.</p>
+      <p class="lede">Published methods and the loops you can run here, each described by the same five parts so you can compare them directly. Pick two to see exactly where they differ, or open one on the canvas.</p>
+      <p class="hint" id="gallery-meta"></p>
       <div class="filters" id="filters" aria-label="Filter the gallery"></div>
       <p id="gallery-count" class="hint" role="status"></p>
       <div id="compare-panel" class="compare-panel" hidden>
@@ -140,7 +182,7 @@
 
   <footer class="wide foot">
     <span>RSI Library</span>
-    <span>Runs started here are kept for 14 days. <a href="/llms.txt">Agent instructions</a>, <a href="/api/catalog">loop catalog</a>, <a href="/jobs">hosted jobs</a>.</span>
+    <span>Unfinished runs are kept for 14 days after their last step, finished runs for 90 days, and you can delete a run from its page. <a href="/llms.txt">Agent instructions</a>, <a href="/api/catalog">loop catalog</a>, <a href="/jobs">hosted jobs</a>, <a href="https://github.com/abdulrahimiqbal/rsi-library/blob/main/CONTRIBUTING.md" rel="noopener">contributing</a>.</span>
   </footer>
 </body>
 </html>

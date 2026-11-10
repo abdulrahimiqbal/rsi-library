@@ -409,6 +409,10 @@ def _summary(result: dict) -> dict:
     return {"verdict": result["evidence"]["verdict"], **{key: result[key] for key in keep if key in result}}
 
 
+def _name(loop: str) -> str:
+    return methods._METHODS[loop][0] if loop in methods._METHODS else loop
+
+
 def _recommend(results: dict[str, dict], original: dict) -> dict:
     improved = {loop: item for loop, item in results.items() if item.get("verdict") == "improved"}
     what = "function" if original["type"] == "program" else "prompt"
@@ -419,7 +423,7 @@ def _recommend(results: dict[str, dict], original: dict) -> dict:
             "loop": loop,
             "artifact": best["artifact"],
             "reason": (
-                f"{loop} raised the holdout score from {best['baseline_holdout']:.0%} to {best['candidate_holdout']:.0%} "
+                f"{_name(loop)} ({loop}) raised the holdout score from {best['baseline_holdout']:.0%} to {best['candidate_holdout']:.0%} "
                 f"(p = {_p(best['evidence']['p_value'])}), a statistically significant gain."
             ),
         }
@@ -432,7 +436,7 @@ def _recommend(results: dict[str, dict], original: dict) -> dict:
             "artifact": original,
             "candidate_to_retest": best["candidate"],
             "reason": (
-                f"{loop} scored higher on holdout ({best['baseline_holdout']:.0%} to {best['candidate_holdout']:.0%}), "
+                f"{_name(loop)} ({loop}) scored higher on holdout ({best['baseline_holdout']:.0%} to {best['candidate_holdout']:.0%}), "
                 f"but p = {_p(best['evidence']['p_value'])} could be chance. Keep the original, or retest the candidate "
                 "with more holdout cases."
             ),
