@@ -720,7 +720,12 @@ function runInspector(kind) {
   }
   if (kind === "proposer") {
     const names = listed(view.loops.map(loopName));
-    return [node("p", "inspector-text", `${names} ${view.loops.length > 1 ? "write" : "writes"} the revisions. To answer this run's remaining work from this page, enter your OpenRouter key and continue.`), ...keyFields()];
+    const code = request.artifact.type === "program" ? " and runs its functions in a sandbox in this tab" : "";
+    return [
+      node("p", "inspector-text", `${names} ${view.loops.length > 1 ? "write" : "writes"} the revisions. To answer this run's remaining work from this page, enter your OpenRouter key and continue.`),
+      ...keyFields(),
+      node("p", "hint", `Continuing sends this run's prompts to your model${code}. Only continue runs you started or trust.`),
+    ];
   }
   return [node("p", "inspector-text", partFor(kind).description)];
 }

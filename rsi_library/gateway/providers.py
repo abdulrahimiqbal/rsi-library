@@ -103,6 +103,10 @@ class Model:
                     result = json.dumps({"text": prompt, "improver": "Look for reliable topic cues, then return only the corresponding label."})
                 else:
                     result = json.dumps({"text": prompt})
+            elif stage.endswith("_judge"):
+                graded = json.loads(messages[-1]["content"])
+                same = " ".join(graded["reply"].split()).casefold() == " ".join(graded["expected"].split()).casefold()
+                result = "10" if same else "0"
             else:
                 text = messages[-1]["content"].casefold()
                 instructions = messages[0]["content"].casefold()
