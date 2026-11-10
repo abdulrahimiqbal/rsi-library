@@ -248,6 +248,9 @@ class RunStorage(unittest.TestCase):
         self.assertEqual(self.lab.get(view["id"]), view)
         self.assertIn("finished", self.lab.submit(view["id"], {"w_x": "y"})["note"])
 
+    def test_the_run_store_is_private_to_its_owner(self):
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
     def test_runs_can_be_deleted(self):
         view = self.start()
         self.assertTrue(self.lab.delete(view["id"]))

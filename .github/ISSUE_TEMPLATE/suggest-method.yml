@@ -1,0 +1,61 @@
+name: Suggest a method
+description: Add a self-improvement method to the gallery.
+title: "Gallery: "
+labels: ["gallery"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a method. The gallery describes each one in the same five parts, so methods can be compared part by part. Answer what you can; a link to the paper is the one thing we need.
+  - type: input
+    id: name
+    attributes:
+      label: Method name
+      placeholder: "GEPA: reflective prompt evolution"
+    validations:
+      required: true
+  - type: input
+    id: paper
+    attributes:
+      label: Paper
+      description: A link to the abstract page, for example on arXiv.
+      placeholder: "https://arxiv.org/abs/2507.19457"
+    validations:
+      required: true
+  - type: dropdown
+    id: family
+    attributes:
+      label: What it changes
+      options:
+        - Prompt
+        - Pipeline
+        - Memory and skills
+        - Code
+        - Agent itself
+        - Weights
+        - Not sure
+  - type: textarea
+    id: parts
+    attributes:
+      label: The five parts
+      description: One sentence each, if you can.
+      value: |
+        Target (what changes):
+        Proposer (who writes the next version, from what):
+        Judge (how a version is scored):
+        Search (which version is built on next):
+        Harness (what each version is tested on):
+  - type: dropdown
+    id: improver
+    attributes:
+      label: Does it rewrite its own improver?
+      options:
+        - "Yes"
+        - Partly
+        - "No"
+        - Not sure
+  - type: input
+    id: closest
+    attributes:
+      label: Closest loop on the site
+      description: Optional. reflect-v1, evolve-v1, self-revise-v1, greedy-prompt, archive-prompt or adaptive-improver.

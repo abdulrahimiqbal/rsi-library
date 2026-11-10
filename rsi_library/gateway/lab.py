@@ -528,6 +528,17 @@ class Lab:
         self._now = clock
         # One lock per run, striped: a slow replay holds up only runs that share its stripe.
         self._locks = tuple(threading.Lock() for _ in range(_LOCKS))
+        # Runs hold people's prompts and cases, so only the service user may read the file.
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # A store created before this rule tightens to owner-only too.
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
+        else:
+            os.close(descriptor)
         with closing(self._connect()) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(

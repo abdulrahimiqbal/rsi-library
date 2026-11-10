@@ -1,6 +1,6 @@
 # RSI Library
 
-RSI Library improves prompts with a simple rule: **an optimizer may only change your prompt if the change holds up on cases it never saw.**
+RSI Library improves prompts and small functions with a simple rule: **an optimizer may only change your prompt or function if the change holds up on cases it never saw.**
 
 It has two parts:
 
@@ -12,9 +12,10 @@ It has two parts:
 Everything on [rsilibrary.xyz](https://rsilibrary.xyz) works without an account, for people and for AI agents.
 
 - **Tell your assistant in plain words.** "Go to rsilibrary.xyz/llms.txt and follow it. Test every loop on my prompt with these cases and tell me exactly what to change." The page at `/llms.txt` explains every loop and call.
-- **Or connect it once.** Add `https://rsilibrary.xyz/mcp` as a custom connector (remote MCP server, no sign-in). It offers `list_loops`, `run_offline_loop`, `compare_offline_loops`, `start_prompt_run`, `submit_work` and `get_run`.
+- **Or connect it once.** Add `https://rsilibrary.xyz/mcp` as a custom connector (remote MCP server, no sign-in). It offers `list_loops`, `run_offline_loop`, `compare_offline_loops`, `start_prompt_run`, `start_code_run`, `submit_work`, `get_run` and `delete_run`.
+- **Watch it work.** Every run has a page, `https://rsilibrary.xyz/runs/<run id>`, linked from the run's `page` field. It follows the run live (what each loop is doing, its best training score so far, every version it scored) and then shows the verdicts and the version to adopt. From the page you can continue the run with your own OpenRouter key, or delete it.
 
-The homepage is a canvas: the loop is drawn as a ring of five parts, templates load from a sidebar, selecting a part changes it, and a live panel shows each version as the loop runs. Below it, a gallery holds fact sheets for published methods (OPRO, EvoPrompt, Promptbreeder, DSPy MIPROv2, TextGrad, GEPA, ADAS, AlphaEvolve, the Darwin Gödel Machine and others) in the same five parts, with filters, a side-by-side comparison, and the closest loop you can run here. The fact sheets live in `rsi_library/gateway/methods_gallery.py` and are served in the `gallery` field of `/api/catalog`.
+The homepage is a canvas: the loop is drawn as a ring of five parts, templates load from a sidebar, selecting a part changes it, and a live panel shows each version as the loop runs. Below it, measured results compare the loops on the same tasks, and a gallery holds fact sheets for published methods (OPRO, EvoPrompt, Promptbreeder, DSPy MIPROv2, TextGrad, GEPA, ADAS, AlphaEvolve, the Darwin Gödel Machine and others) in the same five parts, with filters, a side-by-side comparison, and the closest loop you can run here. Any of them opens on the canvas as a read-only loop. The fact sheets live in `rsi_library/gateway/methods_gallery.py`, were checked against each paper on 10 November 2026, and are served in the `gallery` field of `/api/catalog`.
 
 There are two kinds of runnable loop:
 
@@ -22,6 +23,7 @@ There are two kinds of runnable loop:
 | --- | --- | --- |
 | No model | `greedy-prompt`, `archive-prompt`, `adaptive-improver` | Nobody: they improve a small routing prompt for a built-in interpreter, on the server, instantly. |
 | Your prompt | `reflect-v1`, `evolve-v1`, `self-revise-v1` | The caller. The server runs the loop and hands out work items ("answer this prompt for this input", "propose a revision"). Your assistant, or your own OpenRouter key in the browser, answers them. The server scores the answers, keeps the holdout labels, and applies the acceptance rule below. |
+| Your function | `reflect-v1`, `evolve-v1` | The caller again, who also runs the code. Work items of kind `run` ask for `entry(input)` to be called in the caller's sandbox. **The server never executes code.** The homepage runs JavaScript in a fresh web worker per call, under a policy that blocks every network request, with a 3-second limit; Python goes to your assistant. |
 
 ```sh
 curl -s https://rsilibrary.xyz/api/catalog                      # every loop and its parts
@@ -31,7 +33,30 @@ curl -s https://rsilibrary.xyz/api/runs -H 'Content-Type: application/json' \
   -d '{"loops": "all", "prompt": "…", "task": {"train": […], "holdout": […]}}'
 ```
 
-A run started with `POST /api/runs` replies with work items. Answer them and post the answers to `/api/runs/{id}/work` until its state is `done`; the result has a verdict for each loop and a recommendation. Runs are kept for 14 days and are reachable only by their ID.
+A run started with `POST /api/runs` replies with work items. Answer them and post the answers to `/api/runs/{id}/work` until its state is `done`; the result has a verdict for each loop and a recommendation. `GET /api/runs/{id}?work=0` watches a run without its work items, and `DELETE /api/runs/{id}` deletes it. Unfinished runs are kept for 14 days after their last step and finished runs for 90 days. A run is reachable only by its ID, so treat its link like a password.
+
+A function goes in as `"artifact": {"type": "program", "language": "python" | "javascript", "entry": "toSeconds", "source": "…"}`. It is called with each case's input as one text argument, and its result (text as it is, anything else as JSON) is scored against `expected`.
+
+### Scoring
+
+Choose how each reply is scored with `objective`, and tune it with `scoring`:
+
+| Objective | Scores a reply by | `scoring` |
+| --- | --- | --- |
+| `normalized` (default here) | Equality, ignoring case and spacing | |
+| `exact` | Exact equality | |
+| `number` | The last number in the reply, compared with the expected number | `tolerance`, `relative_tolerance` |
+| `contains` | Whether it contains the expected text | |
+| `json` | Each checked field of a JSON object, with partial credit | `fields` |
+| `judge` | A model's 0-10 grade against a rubric, with the expected output as a reference. One more model call per case. | `rubric` |
+
+Expected outputs are checked when the run starts: a `number` run needs a number in every expected output, a `json` run a JSON object. Partial credit and repeated tries average per case, and the significance test compares those per-case scores.
+
+## Measured results
+
+`python -m rsi_library.benchmarks` runs every offline loop on four labelled tasks with 20 seeds at budgets of 12, 24 and 48 versions, and reports how far the winner beat the starting prompt on held-back examples. The numbers are exact and shipped in `rsi_library/benchmark_results.json`; a test recomputes part of the grid so they can't drift from the code. At 24 versions, greedy edits gain 34.7 points on average, archive search 31.5, and the adaptive improver 29.2: on these keyword tasks, exploring older versions costs more than it finds.
+
+The loops that improve your own prompt depend on the model that answers, so they are measured with a live model: `OPENROUTER_API_KEY=… python examples/lab_benchmark.py --model <model> --out driven.json`, then `python -m rsi_library.benchmarks --write --driven driven.json` to publish the results on the site. No live-model results are published yet.
 
 ## The acceptance rule
 
@@ -99,7 +124,8 @@ To add a component, create a registry with `make_registry()`, register your impl
 
 ```sh
 python3 -m unittest discover -s tests
+python3 -m rsi_library.benchmarks               # the offline results; add --write to publish them
 python3 examples/gateway_benchmark.py --smoke   # against a local demo gateway
 ```
 
-The package has no third-party dependencies.
+The package has no third-party dependencies. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to add a method to the gallery, a runnable loop, or a scoring objective.
