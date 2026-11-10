@@ -31,6 +31,7 @@ from ..builtins import TEMPLATES, catalog as offline_catalog, make_registry
 from ..engine import ConfigError
 from . import methods
 from .methods import MethodError
+from .methods_gallery import FAMILIES, SEARCH_STYLES, gallery
 
 DRIVEN_IDS = tuple(methods._METHODS)
 MAX_DRIVEN_TRIALS = 10
@@ -42,6 +43,15 @@ MAX_WORK = 64
 RETENTION_SECONDS = 14 * 86_400
 MAX_STORED_RUNS = 5000
 _PENDING = "[[rsi-library-pending-output]]"
+
+_BEST_FOR = {
+    "greedy-prompt": "The simplest loop. Start here to see propose, score, keep.",
+    "archive-prompt": "Seeing how branching from older versions escapes a dead end.",
+    "adaptive-improver": "Watching a loop change how it edits, not only what it edits.",
+    "reflect-v1": "A prompt that makes the same kind of mistake repeatedly.",
+    "evolve-v1": "Tasks where different fixes help different cases.",
+    "self-revise-v1": "Longer runs, where better editing instructions pay off.",
+}
 
 _SEARCH_TEXT = {
     "reflect-v1": ("Best first", "Build on the highest scoring version, the earliest on ties."),
@@ -111,6 +121,7 @@ def catalog() -> dict:
             "name": template["name"],
             "mode": "offline",
             "summary": template["description"],
+            "best_for": _BEST_FOR[template["id"]],
             "improves": "A small routing prompt for the built-in interpreter. No model is called.",
             "inspired_by": template["source_url"],
             "parts": {kind: deepcopy(parts[kind][config[kind]]) for kind in engine.KINDS},
@@ -124,6 +135,7 @@ def catalog() -> dict:
             "name": entry["name"],
             "mode": "driven",
             "summary": entry["description"],
+            "best_for": _BEST_FOR[entry["id"]],
             "improves": "Your own prompt" + (" or prompt chain" if "prompt-chain" in entry["artifact_types"] else "")
                         + ". Your model answers the work items; the server runs the loop and the holdout check.",
             "artifact_types": entry["artifact_types"],
@@ -139,6 +151,7 @@ def catalog() -> dict:
         })
     return {
         "loops": loops,
+        "gallery": {"families": list(FAMILIES), "search_styles": list(SEARCH_STYLES), "methods": gallery(loops)},
         "components": offline["components"],
         "example_task": offline["example_task"],
         "example_prompt_run": deepcopy(EXAMPLE_PROMPT_RUN),
@@ -520,6 +533,8 @@ Compare:      POST {base}/api/compare  {{"loops": "all", "budget": 24, "seed": 1
 Optional fields: `task` ({{"train": [{{"input", "expected"}}…], "holdout": […]}}), `budget` (1-100 scored versions,
 including the starting one), `seed`, and a replacement part: `target`, `proposer`, `judge`, `search` or `harness`.
 GET {base}/api/catalog lists every loop, the parts you can swap in, and an example task.
+Its `gallery` field has fact sheets for published self-improvement methods (OPRO, GEPA, Darwin Gödel Machine and
+others) described in the same five parts, each with the closest loop you can run here.
 
 ## Loops that improve the user's own prompt
 

@@ -14,7 +14,9 @@ Everything on [rsilibrary.xyz](https://rsilibrary.xyz) works without an account,
 - **Tell your assistant in plain words.** "Go to rsilibrary.xyz/llms.txt and follow it. Test every loop on my prompt with these cases and tell me exactly what to change." The page at `/llms.txt` explains every loop and call.
 - **Or connect it once.** Add `https://rsilibrary.xyz/mcp` as a custom connector (remote MCP server, no sign-in). It offers `list_loops`, `run_offline_loop`, `compare_offline_loops`, `start_prompt_run`, `submit_work` and `get_run`.
 
-There are two kinds of loop:
+The homepage is a canvas: the loop is drawn as a ring of five parts, templates load from a sidebar, selecting a part changes it, and a live panel shows each version as the loop runs. Below it, a gallery holds fact sheets for published methods (OPRO, EvoPrompt, Promptbreeder, DSPy MIPROv2, TextGrad, GEPA, ADAS, AlphaEvolve, the Darwin Gödel Machine and others) in the same five parts, with filters, a side-by-side comparison, and the closest loop you can run here. The fact sheets live in `rsi_library/gateway/methods_gallery.py` and are served in the `gallery` field of `/api/catalog`.
+
+There are two kinds of runnable loop:
 
 | Kind | Loops | Who does the thinking |
 | --- | --- | --- |

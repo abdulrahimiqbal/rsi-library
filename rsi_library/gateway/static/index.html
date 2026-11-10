@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta name="description" content="Run, fork and compare self-improvement loops for prompts. Works from this page, from an API, or from your AI assistant.">
+  <meta name="description" content="Build a self-improvement loop on a canvas: pick a template, change a part, and watch it run. Works for people and for AI assistants.">
   <title>RSI Library</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2317233b'/%3E%3Cpath d='M9 22V10l7 6 7-6v12' fill='none' stroke='%23f5f6f3' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='%237f9bff'/%3E%3C/svg%3E">
   <link rel="alternate" type="text/markdown" href="/llms.txt" title="Instructions for AI agents">
@@ -12,13 +12,14 @@
   <script src="/lab.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#loops">Skip to the loops</a>
+  <a class="skip-link" href="#canvas">Skip to the canvas</a>
   <header class="masthead">
-    <div class="wrap masthead-row">
+    <div class="wide masthead-row">
       <a class="wordmark" href="/">RSI Library</a>
       <nav aria-label="Site">
-        <a href="#loops">Loops</a>
-        <a href="#assistant">Use it from your assistant</a>
+        <a href="#canvas">Canvas</a>
+        <a href="#gallery">Gallery</a>
+        <a href="#assistant">For assistants</a>
         <a href="/jobs">Hosted jobs</a>
         <a href="https://github.com/abdulrahimiqbal/rsi-library" rel="noopener">Source</a>
       </nav>
@@ -26,138 +27,93 @@
   </header>
 
   <main>
-    <section class="wrap intro">
-      <h1>Self-improvement loops you can run, fork and compare</h1>
-      <p>A loop proposes a change to a prompt, scores it on training cases, keeps what works, and checks the winner on cases it never saw. Pick one below and run it. No account needed.</p>
-    </section>
-
-    <section class="wrap bench" id="loops" aria-label="Loops">
-      <aside class="shelf" aria-label="Choose a loop">
-        <h2 class="shelf-title">Runs here, no model</h2>
-        <p class="shelf-note">Improves a small routing prompt on this server, so you can watch how each loop searches.</p>
-        <ul id="shelf-offline" class="shelf-list"></ul>
-        <h2 class="shelf-title">Improves your prompt</h2>
-        <p class="shelf-note">Your assistant or your own model key answers. The server runs the loop and the holdout check.</p>
-        <ul id="shelf-driven" class="shelf-list"></ul>
+    <section class="wide studio" aria-label="Loop canvas">
+      <aside class="templates" aria-label="Templates">
+        <h2>Templates</h2>
+        <h3>Run here, no model</h3>
+        <ul id="templates-offline" class="template-list"></ul>
+        <h3>Improve your prompt</h3>
+        <ul id="templates-driven" class="template-list"></ul>
+        <p class="hint">A template is a starting loop. Load one, then change any part on the canvas.</p>
       </aside>
 
-      <div class="sheet" id="sheet" aria-live="polite">
-        <div class="sheet-head">
-          <div>
-            <h2 id="loop-name">Loading loops…</h2>
-            <p id="loop-summary" class="lede"></p>
-          </div>
-          <a id="loop-source" class="source-link" rel="noopener" hidden>Method it is based on</a>
+      <div class="stage">
+        <div class="stage-head">
+          <h1 id="loop-name">Loading…</h1>
+          <p id="loop-summary" class="lede"></p>
         </div>
 
-        <ol class="parts" id="parts" aria-label="The loop's five parts"></ol>
-
-        <form id="offline-form" class="controls" hidden>
-          <div class="control-row">
-            <label>Versions to try
-              <input id="budget" type="number" min="2" max="100" step="1" value="24" required>
-            </label>
-            <label>Seed
-              <input id="seed" type="number" min="0" max="4294967295" step="1" value="13" required>
-            </label>
-            <div class="control-actions">
-              <button type="submit" class="primary" id="run-offline">Run loop</button>
-              <button type="button" id="compare-offline">Compare all three</button>
-            </div>
-          </div>
-          <details class="fold">
-            <summary>Use your own labelled cases</summary>
-            <p class="hint">A JSON object with <code>train</code> and <code>holdout</code> lists. Each case has <code>input</code> and <code>expected</code>. Leave it as is to use the support-ticket example.</p>
-            <textarea id="offline-task" rows="9" spellcheck="false" aria-label="Task as JSON"></textarea>
-            <button type="button" class="quiet" id="reset-task">Restore the example</button>
-          </details>
-          <p id="offline-message" class="notice" role="status"></p>
-        </form>
-
-        <form id="driven-form" class="controls" hidden>
-          <label>Prompt to improve
-            <textarea id="driven-prompt" rows="3" maxlength="4000" spellcheck="false" required></textarea>
+        <form id="toolbar" class="toolbar">
+          <label id="budget-field">Versions to try
+            <input id="budget" type="number" min="2" max="100" step="1" value="24" required>
           </label>
-          <div class="pair">
-            <label>Training cases <span class="hint">JSON, the loop learns from these</span>
-              <textarea id="driven-train" rows="7" spellcheck="false" required></textarea>
-            </label>
-            <label>Holdout cases <span class="hint">JSON, at least 8, only for the final check</span>
-              <textarea id="driven-holdout" rows="7" spellcheck="false" required></textarea>
-            </label>
+          <label id="seed-field">Seed
+            <input id="seed" type="number" min="0" max="4294967295" step="1" value="13" required>
+          </label>
+          <label id="trials-field" hidden>Revisions to try
+            <input id="trials" type="number" min="1" max="10" step="1" value="3" required>
+          </label>
+          <label id="all-field" class="check" hidden><input id="all-loops" type="checkbox"> Test all three prompt loops</label>
+          <div class="toolbar-actions">
+            <button type="submit" class="primary" id="run">Run</button>
+            <button type="button" id="compare">Compare the three templates</button>
+            <button type="button" id="handoff" hidden>Copy a message for my assistant</button>
+            <button type="button" id="stop" hidden>Stop</button>
+            <button type="button" class="quiet" id="share">Copy link to this setup</button>
           </div>
-          <div class="control-row">
-            <label>Revisions to try
-              <input id="driven-trials" type="number" min="1" max="10" step="1" value="3" required>
-            </label>
-            <label class="check"><input id="driven-all" type="checkbox"> Test all three loops on this task</label>
-          </div>
-
-          <fieldset class="who">
-            <legend>Who answers the model calls?</legend>
-            <label class="choice"><input type="radio" name="who" value="assistant" checked> My AI assistant</label>
-            <label class="choice"><input type="radio" name="who" value="key"> My OpenRouter key, in this browser</label>
-          </fieldset>
-
-          <div id="who-assistant" class="handoff">
-            <p>Copy this to your assistant. It carries your prompt and cases, and tells the assistant where to go.</p>
-            <pre id="handoff-text" tabindex="0"></pre>
-            <div class="control-actions">
-              <button type="button" class="primary" id="copy-handoff">Copy message</button>
-              <span id="handoff-note" class="hint" role="status"></span>
-            </div>
-          </div>
-
-          <div id="who-key" class="keyed" hidden>
-            <div class="pair">
-              <label>OpenRouter API key
-                <input id="or-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…">
-              </label>
-              <label>Model
-                <input id="or-model" type="text" value="openai/gpt-4.1-mini" spellcheck="false">
-              </label>
-            </div>
-            <p class="hint">Your key goes from this tab straight to OpenRouter and is never sent to RSI Library. Model calls are billed to your OpenRouter account.</p>
-            <div class="control-actions">
-              <button type="submit" class="primary" id="run-driven">Run loop</button>
-              <button type="button" id="stop-driven" hidden>Stop</button>
-            </div>
-          </div>
-          <p id="driven-message" class="notice" role="status"></p>
         </form>
+        <p id="stage-message" class="notice" role="status"></p>
 
-        <div id="outcome" class="outcome" hidden>
-          <p id="headline" class="headline"></p>
-          <div class="plot-frame">
-            <svg id="plot" class="plot" viewBox="0 0 720 300" role="img" aria-labelledby="plot-title">
-              <title id="plot-title">Score of each version tried</title>
-            </svg>
-            <ul class="legend" id="legend"></ul>
+        <div class="canvas" id="canvas">
+          <svg class="ring" id="ring" viewBox="0 0 800 500" aria-hidden="true"></svg>
+          <div class="hub" id="hub" aria-live="polite">
+            <span class="hub-score" id="hub-score">–</span>
+            <span class="hub-label" id="hub-label">best training score</span>
+            <span class="hub-step" id="hub-step"></span>
           </div>
-          <div id="verdicts" class="verdicts"></div>
-          <div class="inspect">
-            <div class="inspect-list">
-              <h3>Versions tried</h3>
-              <ol id="versions" class="versions"></ol>
-            </div>
-            <div class="inspect-detail">
-              <h3 id="version-title">Version</h3>
-              <p id="version-meta" class="hint"></p>
-              <pre id="version-text" tabindex="0"></pre>
-            </div>
-          </div>
-          <details class="fold">
-            <summary>Do the same from a script</summary>
-            <pre id="api-call" tabindex="0"></pre>
-          </details>
+          <div id="nodes"></div>
         </div>
+
+        <div class="inspector" id="inspector" aria-live="polite"></div>
       </div>
+
+      <aside class="insights" aria-label="Live run">
+        <h2>Live run</h2>
+        <p id="headline" class="headline">Run the loop to see how it searches.</p>
+        <dl class="stats" id="stats"></dl>
+        <div id="verdicts" class="verdicts" hidden></div>
+        <svg id="plot" class="plot" viewBox="0 0 420 220" role="img" aria-label="Training score of each version, in the order tried"></svg>
+        <ul class="legend" id="legend"></ul>
+        <h3 id="version-title">Version</h3>
+        <p id="version-meta" class="hint"></p>
+        <pre id="version-text" tabindex="0"></pre>
+        <ol class="feed" id="feed" aria-label="What happened, newest first"></ol>
+        <details class="fold" id="script-fold" hidden>
+          <summary>Do the same from a script</summary>
+          <pre id="api-call" tabindex="0"></pre>
+        </details>
+      </aside>
     </section>
 
-    <section class="wrap assistant" id="assistant">
+    <section class="wide gallery" id="gallery">
+      <h2>Gallery of self-improvement loops</h2>
+      <p class="lede">Published methods and the loops you can run here, each described by the same five parts so you can compare them directly. Pick two to see exactly where they differ.</p>
+      <div class="filters" id="filters" aria-label="Filter the gallery"></div>
+      <p id="gallery-count" class="hint" role="status"></p>
+      <div id="compare-panel" class="compare-panel" hidden>
+        <div class="compare-head">
+          <h3 id="compare-title">Compare</h3>
+          <button type="button" class="quiet" id="compare-clear">Clear</button>
+        </div>
+        <div class="table-scroll"><table class="diff" id="compare-table"></table></div>
+      </div>
+      <div class="gallery-grid" id="gallery-grid"></div>
+    </section>
+
+    <section class="wide assistant" id="assistant">
       <div class="assistant-copy">
-        <h2>Use it from your assistant</h2>
-        <p>Everything on this page is also an API, written for AI agents. Tell your assistant what you want in plain words and let it do the runs.</p>
+        <h2>Let your assistant drive</h2>
+        <p>Everything on the canvas is also an API written for AI assistants. Say what you want and let it do the runs.</p>
         <ul class="asks">
           <li><button type="button" class="ask" data-ask="Go to {origin}/llms.txt and follow it. Run the archive-prompt loop with a budget of 30 versions and tell me how the winning prompt differs from the starting one.">“Run the archive loop with a budget of 30 and tell me what changed.”</button></li>
           <li><button type="button" class="ask" data-ask="Go to {origin}/llms.txt and follow it. Compare all the no-model loops on the built-in task at the same budget and seed, and tell me which one I should use and why.">“Compare all the loops and tell me which one to use.”</button></li>
@@ -167,29 +123,22 @@
       </div>
       <div class="assistant-how">
         <h3>Connect it once</h3>
-        <p>If your assistant supports connectors, add this address as a custom connector. It needs no sign-in.</p>
+        <p>Add this address as a custom connector. It needs no sign-in.</p>
         <div class="copy-line">
           <code id="mcp-url"></code>
           <button type="button" id="copy-mcp">Copy</button>
         </div>
-        <h3>Or let it read the instructions</h3>
-        <p>Assistants that can make web requests only need this page. It explains every loop and call.</p>
+        <h3>Or point it at the instructions</h3>
+        <p>One page explains every loop and call.</p>
         <div class="copy-line">
           <code id="guide-url"></code>
           <a id="guide-link" href="/llms.txt">Open</a>
         </div>
-        <h3>What the assistant does</h3>
-        <ol class="flow">
-          <li>Reads the list of loops and picks the one you named.</li>
-          <li>Starts a run with your prompt and labelled cases.</li>
-          <li>Answers the work the server hands it: score this prompt on these inputs, propose a revision.</li>
-          <li>Gets the verdict from the holdout check and reports it to you.</li>
-        </ol>
       </div>
     </section>
   </main>
 
-  <footer class="wrap foot">
+  <footer class="wide foot">
     <span>RSI Library</span>
     <span>Runs started here are kept for 14 days. <a href="/llms.txt">Agent instructions</a>, <a href="/api/catalog">loop catalog</a>, <a href="/jobs">hosted jobs</a>.</span>
   </footer>

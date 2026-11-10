@@ -73,6 +73,17 @@ class PublicLoops(unittest.TestCase):
             self.assertEqual(set(loop["parts"]), {"target", "proposer", "judge", "search", "harness"})
         self.assertEqual(loops["evolve-v1"]["parts"]["search"]["id"], "complementary")
         self.assertIn("/api/runs", lab_module.agent_guide("https://example.test"))
+        gallery = lab_module.catalog()["gallery"]
+        methods = {entry["id"]: entry for entry in gallery["methods"]}
+        self.assertEqual(sum(entry["runnable"] for entry in methods.values()), 6)
+        self.assertGreaterEqual(len(methods), 20)
+        for entry in methods.values():
+            self.assertEqual(set(entry["parts"]), {"target", "proposer", "judge", "search", "harness"})
+            self.assertIn(entry["family"], gallery["families"])
+            self.assertIn(entry["search_style"], gallery["search_styles"])
+            self.assertTrue(entry["closest"] is None or entry["closest"] in loops)
+            self.assertTrue(entry["runnable"] or entry["source"].startswith("https://"))
+        self.assertEqual(methods["promptbreeder"]["closest"], "self-revise-v1")
 
     def test_offline_run_and_compare_accept_loop_ids(self):
         result = lab_module.offline_run({"loop": "greedy-prompt", "budget": 6, "seed": 2})
